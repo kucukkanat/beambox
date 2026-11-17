@@ -70,8 +70,7 @@ impl McpServer {
         Self { core, tool_router: Self::tool_router() }
     }
 
-    /// Runs one agent call on `sandbox`: rejects it during take-over, and shows it in the activity feed
-    /// when it starts and again with its exit code when it ends.
+    /// One agent call, guarded by take-over and shown in the activity feed (see `Core::agent_call`).
     async fn on<T>(
         &self,
         ctx: &RequestContext<RoleServer>,
@@ -80,13 +79,7 @@ impl McpServer {
         call: impl Future<Output = Result<T, String>>,
         exit: impl Fn(&T) -> i32,
     ) -> Result<T, String> {
-        self.core.guard(sandbox)?;
-        let (id, agent) = (self.core.new_activity_id(), client(ctx));
-        self.core.record(&id, sandbox, &agent, command, None);
-        let result = call.await;
-        let code = result.as_ref().map_or(-1, exit);
-        self.core.record(&id, sandbox, &agent, command, Some(code));
-        result
+        self.core.agent_call(&client(ctx), sandbox, command, call, exit).await
     }
 
     #[tool(description = "Create and boot a microVM sandbox. All fields are optional; defaults: base template, 1 vCPU, 256 MiB.")]

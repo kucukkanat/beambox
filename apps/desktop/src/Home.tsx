@@ -229,6 +229,11 @@ function ConnectAgent({ api }: { api: Api }) {
     ["Cursor (~/.cursor/mcp.json)", json],
     ["Other MCP clients", json],
   ] as const;
+  const installCli = () =>
+    void api.installCli().then(
+      (message) => toast.success(message),
+      (error) => toast.error(String(error)),
+    );
   const copy = (label: string, text: string) =>
     navigator.clipboard.writeText(text).then(
       () => toast.success(`Copied the ${label} config`),
@@ -250,6 +255,12 @@ function ConnectAgent({ api }: { api: Api }) {
             </Button>
           ))}
         </div>
+        <p className="mt-4 mb-2 text-muted-foreground text-sm">
+          Or use Beambox from a terminal: <code>beambox --help</code>
+        </p>
+        <Button variant="outline" className="w-full justify-start" onClick={installCli}>
+          Install the beambox command
+        </Button>
       </PopoverContent>
     </Popover>
   );

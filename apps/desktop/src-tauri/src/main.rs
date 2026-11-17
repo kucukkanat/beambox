@@ -1,10 +1,13 @@
-// Release builds on Windows have no console window. Piped stdio for `--mcp` still works.
+// Release builds on Windows have no console window; the CLI attaches to the terminal it was run from.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use beambox_lib::cli::{Mode, mode};
+
 fn main() {
-    if std::env::args().any(|arg| arg == "--mcp") {
-        beambox_lib::run_mcp();
-    } else {
-        beambox_lib::run();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match mode(&args) {
+        Mode::Gui(open) => beambox_lib::run(open),
+        Mode::Mcp => beambox_lib::run_mcp(),
+        Mode::Cli => std::process::exit(beambox_lib::run_cli()),
     }
 }

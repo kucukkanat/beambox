@@ -202,6 +202,30 @@ impl Core {
         Ok(())
     }
 
+    /// Runs one agent call on `sandbox`: rejects it during take-over, and shows it in the activity feed when it
+    /// starts and again with its exit code when it ends.
+    pub async fn agent_call<T>(
+        &self,
+        agent: &str,
+        sandbox: &str,
+        command: &str,
+        call: impl Future<Output = Result<T>>,
+        exit: impl Fn(&T) -> i32,
+    ) -> Result<T> {
+        self.guard(sandbox)?;
+        let id = self.new_activity_id();
+        self.record(&id, sandbox, agent, command, None);
+        let result = call.await;
+        self.record(&id, sandbox, agent, command, Some(result.as_ref().map_or(-1, exit)));
+        result
+    }
+
+    /// Save the sandbox's disk as `<name>-<unix seconds>` and return that name.
+    pub async fn snapshot(&self, name: &str, unix_secs: u64) -> Result<String> {
+        let snapshot = format!("{name}-{unix_secs}");
+        self.backend.snapshot(name, &snapshot).await.map(|_| snapshot)
+    }
+
     pub fn new_activity_id(&self) -> String {
         format!("{}-{}", std::process::id(), self.seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
     }

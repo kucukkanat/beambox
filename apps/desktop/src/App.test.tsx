@@ -38,6 +38,9 @@ function fakeApi(sandboxes: Sandbox[] = [], hypervisor: Hypervisor = { state: "o
     hypervisor: vi.fn(async () => hypervisor),
     enableHypervisor: vi.fn(async () => {}),
     mcpCommand: vi.fn(async () => "/Applications/Beambox.app/Contents/MacOS/beambox"),
+    installCli: vi.fn(async () => "Installed. Run `beambox --help` in a terminal."),
+    takeOpen: vi.fn(async () => null),
+    onOpen: vi.fn(() => () => {}),
     desktopPort: vi.fn(async () => 6080),
     terminalOpen: vi.fn(async () => 1),
     terminalInput: vi.fn(async () => {}),
@@ -180,6 +183,40 @@ describe("sandbox view", () => {
     await userEvent.click(screen.getByRole("button", { name: "Take over" }));
     expect(api.setTakeover).toHaveBeenCalledWith("a", true);
     expect(await screen.findByRole("button", { name: "Hand back" })).toBeInTheDocument();
+  });
+});
+
+describe("command line", () => {
+  const desktop = sandbox({ name: "d", template: "desktop", ports: [{ guest: 5900, host: 5900 }] });
+
+  it("opens the Desktop tab of the sandbox `beambox desktop` launched the window for", async () => {
+    const api = fakeApi([desktop]);
+    api.takeOpen = vi.fn(async () => "d");
+    render(<App api={api} />);
+    expect(await screen.findByRole("tab", { name: "Desktop", selected: true })).toBeInTheDocument();
+  });
+
+  it("switches to a sandbox's desktop when asked while the window is open", async () => {
+    const api = fakeApi([sandbox(), desktop]);
+    let open = (_: string) => {};
+    api.onOpen = (handler) => {
+      open = handler;
+      return () => {};
+    };
+    render(<App api={api} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Open a" }));
+    act(() => open("d"));
+    expect(await screen.findByRole("heading", { name: "d" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Desktop", selected: true })).toBeInTheDocument();
+  });
+
+  it("installs the beambox command and says how to use it", async () => {
+    const api = fakeApi();
+    render(<App api={api} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Connect an agent" }));
+    await userEvent.click(screen.getByRole("button", { name: "Install the beambox command" }));
+    expect(api.installCli).toHaveBeenCalledOnce();
+    expect(await screen.findByText(/beambox --help/, { selector: "[data-title]" })).toBeInTheDocument();
   });
 });
 

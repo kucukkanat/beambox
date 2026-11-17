@@ -46,6 +46,12 @@ export type Api = {
   hypervisor(): Promise<Hypervisor>;
   enableHypervisor(): Promise<void>;
   mcpCommand(): Promise<string>;
+  /** Put `beambox` on the PATH; resolves to what to tell the user. */
+  installCli(): Promise<string>;
+  /** The sandbox `beambox desktop` launched the window for, once. */
+  takeOpen(): Promise<string | null>;
+  /** `beambox desktop <name>` while the window is already open. */
+  onOpen(handler: (name: string) => void): () => void;
   desktopPort(name: string): Promise<number>;
   terminalOpen(name: string, onData: (data: Uint8Array) => void): Promise<number>;
   terminalInput(id: number, data: string): Promise<void>;
@@ -76,6 +82,12 @@ export const tauriApi: Api = {
   hypervisor: () => invoke("hypervisor_status"),
   enableHypervisor: () => invoke("enable_hypervisor"),
   mcpCommand: () => invoke("mcp_command"),
+  installCli: () => invoke("install_cli"),
+  takeOpen: () => invoke("take_open"),
+  onOpen: (handler) => {
+    const unlisten = listen<string>("open", (event) => handler(event.payload));
+    return () => void unlisten.then((stop) => stop());
+  },
   desktopPort: (name) => invoke("desktop_port", { name }),
   terminalOpen: (name, onData) => {
     const output = new Channel<number[]>();

@@ -23,7 +23,12 @@ export function App({ api }: { api: Api }) {
   const reduced = useReducedMotion();
   const [sandboxes, setSandboxes] = useState<Sandbox[]>([]);
   const [deleting, setDeleting] = useState<string[]>([]);
-  const [openName, setOpenName] = useState<string | null>(null);
+  // `n` remounts the view, so a repeated `beambox desktop` request switches back to the Desktop tab.
+  const [opened, setOpened] = useState<{ name: string; tab: string; n: number } | null>(null);
+  const openSandbox = useCallback(
+    (name: string, tab = "terminal") => setOpened((o) => ({ name, tab, n: (o?.n ?? 0) + 1 })),
+    [],
+  );
   const [activity, setActivity] = useState<Activity[]>([]);
 
   // Polling also picks up sandboxes that agents create over MCP.
@@ -45,6 +50,15 @@ export function App({ api }: { api: Api }) {
       ),
     [api],
   );
+
+  // `beambox desktop <name>` opens a sandbox's desktop, at launch or in the running window.
+  useEffect(() => {
+    void api.takeOpen().then(
+      (name) => name && openSandbox(name, "desktop"),
+      () => {},
+    );
+    return api.onOpen((name) => openSandbox(name, "desktop"));
+  }, [api, openSandbox]);
 
   const run = (call: Promise<unknown>) => void call.then(refresh, showError);
   const setStatus = (name: string, status: Status) =>
@@ -96,7 +110,7 @@ export function App({ api }: { api: Api }) {
     },
   };
 
-  const open = sandboxes.find((s) => s.name === openName);
+  const open = sandboxes.find((s) => s.name === opened?.name);
   return (
     <MotionConfig
       reducedMotion={reduced ? "always" : "never"}
@@ -104,19 +118,21 @@ export function App({ api }: { api: Api }) {
     >
       <main className="flex h-screen flex-col gap-4 p-6">
         <HypervisorCard api={api} />
-        {open ? (
+        {open && opened ? (
           <SandboxView
+            key={opened.n}
+            initialTab={opened.tab}
             api={api}
             sandbox={open}
             activity={activity.filter((a) => a.sandbox === open.name)}
-            onBack={() => setOpenName(null)}
+            onBack={() => setOpened(null)}
           />
         ) : (
           <Home
             api={api}
             sandboxes={sandboxes.filter((s) => !deleting.includes(s.name))}
             actions={actions}
-            onOpen={setOpenName}
+            onOpen={openSandbox}
           />
         )}
       </main>

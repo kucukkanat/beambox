@@ -189,8 +189,10 @@ pub mod fake {
             self.files.lock().unwrap().insert((name.into(), path.into()), data);
             Ok(())
         }
-        async fn list_dir(&self, _name: &str, _path: &str) -> Result<Vec<DirEntry>> {
-            Ok(vec![])
+        async fn list_dir(&self, name: &str, path: &str) -> Result<Vec<DirEntry>> {
+            let files = self.files.lock().unwrap();
+            let inside = files.keys().filter(|(n, p)| n == name && p.starts_with(path));
+            Ok(inside.map(|(_, p)| DirEntry { path: p.clone(), dir: false }).collect())
         }
         async fn logs(&self, _name: &str) -> Result<Vec<String>> {
             Ok(vec![])

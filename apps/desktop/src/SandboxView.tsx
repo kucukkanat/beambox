@@ -11,11 +11,11 @@ import { cn } from "./lib/utils.ts";
 import { useItemMotion } from "./motion.ts";
 import { Terminal } from "./Terminal.tsx";
 
-type Props = { api: Api; sandbox: Sandbox; activity: Activity[]; onBack(): void };
+type Props = { api: Api; sandbox: Sandbox; activity: Activity[]; initialTab?: string; onBack(): void };
 const showError = (error: unknown) => void toast.error(String(error));
 
-export function SandboxView({ api, sandbox: s, activity, onBack }: Props) {
-  const [tab, setTab] = useState("terminal");
+export function SandboxView({ api, sandbox: s, activity, initialTab = "terminal", onBack }: Props) {
+  const [tab, setTab] = useState(initialTab);
   const [openPorts, setOpenPorts] = useState<number[]>([]);
   const [takenOver, setTakenOver] = useState(false);
   useEffect(() => void api.takeover(s.name).then(setTakenOver, () => {}), [api, s.name]);

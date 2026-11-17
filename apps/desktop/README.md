@@ -10,6 +10,8 @@ can watch them and step in through a GUI. One download, nothing else to install.
   `file_read`, `file_write`, `sandbox_stop` and `sandbox_delete`. **Connect an agent** copies a ready config.
   Sandboxes an agent creates are labelled `beambox.agent=<client name>`. Agents choose a name, template and
   ports; host folder mounts and network policy are GUI-only.
+- **CLI**: the same `beambox` binary run with a command. Everything the window does, from a terminal (see
+  [Command line](#command-line)).
 - **Desktop tab**: noVNC connects to a per-sandbox proxy on 127.0.0.1 that only accepts the app's own webview
   origin, so other pages on the machine can't reach the VNC server.
 
@@ -22,6 +24,7 @@ can watch them and step in through a GUI. One download, nothing else to install.
 | `src-tauri/src/core.rs` | Defaults, templates, naming, host-port picking, take-over, activity events. Shared by GUI and MCP. |
 | `src-tauri/src/micro.rs` | The trait on the microsandbox SDK |
 | `src-tauri/src/mcp.rs` | The `--mcp` server (rmcp) |
+| `src-tauri/src/cli.rs` | The command line (clap), argument → mode dispatch, `beambox shell` (crossterm), PATH install |
 | `src-tauri/src/proxy.rs` | TCP→WebSocket proxy for noVNC (replaces websockify) |
 | `src-tauri/src/paths.rs`, `hypervisor.rs`, `ports.rs` | Bundled runtime paths, hypervisor check, port picking |
 | `images/base/Dockerfile` | Base template image (≤ 10 MB unpacked) |
@@ -35,10 +38,13 @@ can watch them and step in through a GUI. One download, nothing else to install.
   (gitignored). `tauri.runtime.conf.json` bundles `msb` as a sidecar and `libkrunfw` as a resource. At startup the
   app sets `MSB_PATH`, `MSB_LIBKRUNFW_PATH` and `MSB_HOME` (`~/.beambox` on macOS/Linux, because microsandbox socket paths must stay under 104 bytes; `<app data>/microsandbox` on Windows), so it never touches
   `~/.microsandbox` or installs anything system-wide. `cargo test` doesn't need the runtime.
-- **Shared state between the GUI and `--mcp` processes** lives in the app data dir
+- **One binary, three modes** (`cli::mode`): no arguments opens the window, `--mcp` (or `mcp`) serves MCP, anything
+  else is a CLI command. `--open <name>` opens the window on a sandbox's desktop; a second launch hands its
+  arguments to the running window (`tauri-plugin-single-instance`) and exits.
+- **Shared state between the GUI, CLI and `--mcp` processes** lives in the app data dir
   (`~/Library/Application Support/app.beambox.desktop`, `~/.local/share/app.beambox.desktop`,
   `%APPDATA%\app.beambox.desktop`): microsandbox's own database, `takeover/<sandbox>` marker files and
-  `activity.jsonl`, which MCP processes append to and the GUI tails.
+  `activity.jsonl`, which MCP and `--agent` CLI processes append to and the GUI tails.
 - **Templates** are labelled `beambox.template`. Image refs live in `TEMPLATES` in `core.rs`.
 - **Ports** bind to 127.0.0.1 only. A busy host port moves to the next free one, and the UI shows the real one.
 
@@ -55,6 +61,34 @@ npm run check:images -w @repo/desktop # build both images and enforce size limit
 Prerequisites for building: Node 24+, Rust (rustup, stable) and
 [Tauri's system dependencies](https://tauri.app/start/prerequisites/) (Xcode Command Line Tools on macOS;
 WebKitGTK etc. on Linux; WebView2 + MSVC on Windows). No environment variables are needed.
+
+## Command line
+
+**Connect an agent → Install the beambox command** puts `beambox` on the PATH: a two-line launcher in
+`/usr/local/bin` on macOS (one admin prompt), `~/.local/bin` on Linux (the `.deb` already installs
+`/usr/bin/beambox`), and the user PATH on Windows. It's a launcher rather than a symlink because Tauri won't start
+from a symlinked executable on macOS.
+
+```bash
+beambox list                                   # table; add --json to any command for scripts
+beambox create web -t desktop -p 3000 --mount .  # same options as the window's ▾ menu
+beambox exec web -- npm test                   # exits with the command's exit code
+beambox shell web                              # interactive terminal
+beambox put web /workspace/notes.txt notes.txt # or pipe into stdin; `cat` and `ls` read back
+beambox logs web -f
+beambox stats web
+beambox start|stop|fork|snapshot|delete web
+beambox takeover web on                        # pause agent calls on web; `off` hands back
+beambox desktop web                            # open the window on web's Desktop tab
+beambox doctor                                 # hypervisor and bundled runtime check
+beambox mcp                                    # stdio MCP server, same as --mcp
+```
+
+Plain calls are you. With `--agent <name>` a call counts as that agent: it shows in the activity feed and is
+refused while you have taken the sandbox over, like an MCP call. Agents can't change take-over.
+
+Windows: release builds are GUI-subsystem apps, so the CLI attaches to the terminal it was run from. `cmd.exe`
+doesn't wait for GUI-subsystem programs, so output can land after the next prompt there. Not tested on Windows yet.
 
 ## Templates
 
@@ -80,6 +114,8 @@ Run on a fresh machine (macOS Apple Silicon, Ubuntu with KVM, Windows 11) for ev
 4. Click 2: **Open**. The Terminal tab is already active and shows a `sandbox-1:/#` prompt.
 5. Pass if the prompt appears within 3 clicks. Also check: `echo hi` works, **Connect an agent → Claude Code**
    gives a working `claude mcp add` command, and `sandbox_exec` from the agent shows in the activity feed.
+6. **Install the beambox command**, then in a new terminal: `beambox list`, `beambox exec sandbox-1 -- uname -a`,
+   `beambox shell sandbox-1` (type `exit` to leave) and `beambox desktop <a desktop sandbox>`.
 
 macOS: the app is signed with `Entitlements.plist` (`com.apple.security.hypervisor`). Check early whether a
 notarized build also needs `com.apple.security.cs.disable-library-validation` to load the bundled `libkrunfw`.
