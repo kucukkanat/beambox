@@ -238,7 +238,7 @@ pub async fn run(cli: &Cli, core: &Core, io: &mut Io<'_>) -> Result<i32> {
                 if !core.backend.has_snapshot(&snapshot).await? {
                     let (what, time) = match harness {
                         Some(h) => (format!("the {h} sandbox"), "a few minutes"),
-                        None => ("the desktop".into(), "about 10 seconds"),
+                        None => ("the desktop".into(), "about 2 minutes"),
                     };
                     writeln!(io.stderr, "Preparing {what}. This takes {time}, once.").map_err(io_err)?;
                 }

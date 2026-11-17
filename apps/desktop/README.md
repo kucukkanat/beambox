@@ -43,7 +43,7 @@ Beambox desktop: a Tauri 2 app that gives each AI agent its own computer, a micr
 | `src-tauri/src/proxy.rs` | TCP→WebSocket proxy for noVNC (replaces websockify) |
 | `src-tauri/src/paths.rs`, `hypervisor.rs`, `ports.rs` | Bundled runtime paths, hypervisor check, port picking |
 | `images/base/Dockerfile` | Base template image (≤ 10 MB unpacked) |
-| `images/desktop/` | The desktop: `start-desktop` (runs after each boot), `Xresources`, `theme.sh`; built in by `desktop_setup()` (Alpine) and `agent_setup()` (Debian) in `agent.rs` |
+| `images/desktop/` | The desktop: `start-desktop` (runs after each boot), theme, top bar, dock and browser settings, `theme.sh`; built in by `desktop_install()` in `agent.rs` |
 | `scripts/` | `fetch-runtime.mjs`, `check-image-size.mjs`, `cargo.mjs` (bundles `apps/sandbox-mcp`, then runs cargo even if `~/.cargo/bin` isn't on PATH) |
 
 ## How it fits together
@@ -131,20 +131,32 @@ doesn't wait for GUI-subsystem programs, so output can land after the next promp
 
   | Kind | Base image | Setup | Snapshot | First build |
   | --- | --- | --- | --- | --- |
-  | Desktop (plain) | `alpine:3.22` | `desktop_setup()` | `beambox-build-desktop:beambox-desktop-3` | ~10 s |
-  | Agent | `debian:trixie-slim` | `agent_setup(h, false)` + `mcp.js` + MCP config | `beambox-build-<h>:beambox-<h>-2` | ~30 s |
-  | Agent + desktop | `debian:trixie-slim` | `agent_setup(h, true)` + the same files | `beambox-build-<h>-desktop:beambox-<h>-desktop-2` | ~2 min |
+  | Desktop (plain) | `debian:trixie-slim` | `desktop_setup()` | `beambox-build-desktop:beambox-desktop-4` | ~1.5 min |
+  | Agent | `debian:trixie-slim` | `agent_setup(h, false)` + `mcp.js` + MCP config | `beambox-build-<h>:beambox-<h>-5` | ~40 s |
+  | Agent + desktop | `debian:trixie-slim` | `agent_setup(h, true)` + the same files | `beambox-build-<h>-desktop:beambox-<h>-desktop-5` | ~2 min |
 
   Agent snapshots get Node 24 (NodeSource), the harness from npm (`@anthropic-ai/claude-code`, `@openai/codex`,
   `opencode-ai`; latest at build time), tmux, git, curl, `/opt/beambox/mcp.js` and the harness's MCP config
   (`/root/.claude.json`, `/root/.codex/config.toml`, `/root/.config/opencode/opencode.json`). With a desktop they
-  also get the same desktop as below plus Google Chrome on x86-64 or Debian's Chromium on arm64. Agent
+  also get the same desktop as the Desktop template (`desktop_install()`). Agent
   sandboxes default to 2 vCPUs and 2 GiB (4 GiB with a desktop). The app runs `start-desktop` after each boot.
-- **What's in it** (`images/desktop/`): TigerVNC's `Xvnc`, which is the X server and the VNC server in one. It
-  resizes to the Desktop tab instead of being stretched, and sends changes as they're drawn. Also openbox with
-  the dark Onyx theme, a `tint2` panel (terminal launcher and open windows) and xterm in DejaVu Sans Mono
-  (`Xresources`). `theme.sh` applies the settings. `vncconfig` relays text copied in the sandbox to the host's
-  clipboard. Installed size is ~382 MiB (Mesa comes in with the X server), over the spec's 120 MB target.
+- **What's in it** (`images/desktop/`, macOS-like, on Debian because Plank and `xcompmgr` aren't packaged for
+  Alpine): TigerVNC's `Xvnc`, which is the X server and the VNC server in one. It resizes to the Desktop tab
+  instead of being stretched, and sends changes as they're drawn.
+  - openbox with our `Beambox` theme (`openbox/`): dark title bars, centred Inter titles, and traffic-light
+    buttons on the left (`CIML`), drawn as coloured circle bitmaps.
+  - A `tint2` top bar (`tint2rc`): "● Beambox" opens `rofi` (also Super+Space) and the active window's name. No
+    clock, because the sandbox runs on UTC.
+  - The Plank dock (`plank.dconf`, set through dconf, so it needs `dbus-launch` and `dconf-gsettings-backend`):
+    the browser and Terminal, pinned only, magnified on hover. Papirus icons, which need `librsvg2-common`.
+  - `xcompmgr` for shadows and the see-through bar and dock. picom loses track of windows under Xvnc. Window
+    corners stay square.
+  - A gradient background (`hsetroot`), dark GTK, and xterm in DejaVu Sans Mono (`Xresources`).
+  - The browser: Google Chrome on x86-64, Debian's Chromium on arm64. Everything runs as root, where Chromium won't
+    start with its own sandbox, so it gets `--no-sandbox` (`chromium-flags`, Chrome's launcher; the microVM is
+    the isolation). It also gets the system title bar (`browser-preferences.json`) and no sign-in, sync or
+    bookmarks bar (`browser-policies.json`).
+  - `vncconfig` relays text copied in the sandbox to the host's clipboard. `theme.sh` puts it all together.
 - `node scripts/cargo.mjs test real_ -- --ignored --test-threads=1` checks this against real microVMs: the Alpine desktop, a
   Claude Code sandbox (`claude --version`, MCP config, `mcp.js` answers `initialize`, tmux session in
   `/workspace`, no key on disk, take over and hand back) and its desktop variant (Chrome or Chromium, VNC). It

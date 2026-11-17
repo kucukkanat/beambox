@@ -1,0 +1,43 @@
+# The top bar: a Beambox menu button (opens the app launcher, like Spotlight) and the focused window's name,
+# like macOS's menu bar. No clock: the sandbox runs on UTC, so it would disagree with the computer's own.
+rounded = 0
+border_width = 0
+background_color = #1c1c1e 88
+border_color = #000000 0
+
+panel_items = PT
+panel_position = top center horizontal
+panel_size = 100% 28
+panel_margin = 0 0
+panel_padding = 6 0 8
+panel_background_id = 1
+panel_layer = top
+panel_dock = 0
+strut_policy = follow_size
+wm_menu = 0
+
+button = new
+button_text = ●  Beambox
+button_font = Inter Bold 10
+button_font_color = #ffffff 100
+button_padding = 8 0
+button_background_id = 0
+button_lclick_command = rofi -show drun
+
+taskbar_mode = single_desktop
+taskbar_hide_inactive_tasks = 1
+taskbar_name = 0
+taskbar_padding = 0 0 0
+taskbar_background_id = 0
+taskbar_active_background_id = 0
+task_icon = 0
+task_text = 1
+task_centered = 0
+task_maximum_size = 600 28
+task_padding = 8 0 0
+task_font = Inter Bold 10
+task_font_color = #e5e5e7 100
+task_active_font_color = #ffffff 100
+task_background_id = 0
+task_active_background_id = 0
+mouse_left = none

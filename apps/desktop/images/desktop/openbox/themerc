@@ -1,0 +1,74 @@
+# Beambox: a dark, macOS-like openbox theme. Traffic-light buttons on the left (rc.xml titleLayout CIML),
+# centred titles in Inter. Colours: macOS dark window chrome and its red/yellow/green.
+border.width: 1
+padding.width: 10
+padding.height: 7
+window.handle.width: 0
+window.client.padding.width: 0
+window.client.padding.height: 0
+window.label.text.justify: center
+window.active.border.color: #3a3a3c
+window.inactive.border.color: #2c2c2e
+window.active.title.bg: flat solid
+window.active.title.bg.color: #2c2c2e
+window.inactive.title.bg: flat solid
+window.inactive.title.bg.color: #232325
+window.active.label.bg: parentrelative
+window.inactive.label.bg: parentrelative
+window.active.label.text.color: #e5e5e7
+window.inactive.label.text.color: #7c7c80
+window.active.button.unpressed.bg: parentrelative
+window.active.button.pressed.bg: parentrelative
+window.active.button.hover.bg: parentrelative
+window.active.button.disabled.bg: parentrelative
+window.active.button.toggled.unpressed.bg: parentrelative
+window.active.button.toggled.pressed.bg: parentrelative
+window.active.button.toggled.hover.bg: parentrelative
+window.inactive.button.unpressed.bg: parentrelative
+window.inactive.button.pressed.bg: parentrelative
+window.inactive.button.hover.bg: parentrelative
+window.inactive.button.disabled.bg: parentrelative
+window.inactive.button.toggled.unpressed.bg: parentrelative
+window.inactive.button.toggled.pressed.bg: parentrelative
+window.inactive.button.toggled.hover.bg: parentrelative
+window.active.button.close.unpressed.image.color: #ff5f57
+window.active.button.close.hover.image.color: #ff7b75
+window.active.button.close.pressed.image.color: #bf4943
+window.active.button.iconify.unpressed.image.color: #febc2e
+window.active.button.iconify.hover.image.color: #ffcd5c
+window.active.button.iconify.pressed.image.color: #bf8d22
+window.active.button.max.unpressed.image.color: #28c840
+window.active.button.max.hover.image.color: #4fd665
+window.active.button.max.pressed.image.color: #1e9630
+window.active.button.max.toggled.unpressed.image.color: #28c840
+window.active.button.max.toggled.hover.image.color: #4fd665
+window.active.button.max.toggled.pressed.image.color: #1e9630
+window.inactive.button.unpressed.image.color: #4a4a4e
+window.inactive.button.hover.image.color: #6a6a6e
+window.inactive.button.pressed.image.color: #4a4a4e
+window.inactive.button.toggled.unpressed.image.color: #4a4a4e
+menu.border.width: 1
+menu.border.color: #3a3a3c
+menu.items.bg: flat solid
+menu.items.bg.color: #2c2c2e
+menu.items.text.color: #e5e5e7
+menu.items.disabled.text.color: #7c7c80
+menu.items.active.bg: flat solid
+menu.items.active.bg.color: #0a84ff
+menu.items.active.text.color: #ffffff
+menu.title.bg: flat solid
+menu.title.bg.color: #232325
+menu.title.text.color: #e5e5e7
+menu.title.text.justify: center
+menu.separator.color: #3a3a3c
+menu.overlap.x: 0
+osd.border.width: 1
+osd.border.color: #3a3a3c
+osd.bg: flat solid
+osd.bg.color: #2c2c2e
+osd.label.bg: parentrelative
+osd.label.text.color: #e5e5e7
+osd.hilight.bg: flat solid
+osd.hilight.bg.color: #0a84ff
+osd.unhilight.bg: flat solid
+osd.unhilight.bg.color: #3a3a3c

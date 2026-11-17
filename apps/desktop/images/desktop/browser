@@ -1,0 +1,7 @@
+#!/bin/sh
+# The desktop's web browser (menu, x-www-browser): Google Chrome where it's installed (x86-64), else Chromium. Both
+# get --no-sandbox: Chromium through /etc/chromium.d/beambox, Chrome through its launcher (see theme.sh).
+if command -v google-chrome >/dev/null 2>&1; then
+  exec google-chrome --no-sandbox --test-type "$@"
+fi
+exec chromium "$@"

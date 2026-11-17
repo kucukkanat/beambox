@@ -11,7 +11,8 @@ pub const TEMPLATES: &[(&str, &str, u32, &[u16])] = &[
     // (name, image, default memory MiB, guest ports published by default)
     ("base", "alpine:3.22", 256, &[]),
     // Built locally into a snapshot from this image the first time it is used; see `snapshot_for`.
-    ("desktop", "alpine:3.22", 512, &[VNC_PORT]),
+    // Debian, like agent sandboxes: the dock and the browser aren't packaged for Alpine.
+    ("desktop", agent::IMAGE, 2048, &[VNC_PORT]),
 ];
 pub const VNC_PORT: u16 = 5900;
 
@@ -24,10 +25,10 @@ pub const BUILD_PREFIX: &str = "beambox-build-";
 pub fn snapshot_key(harness: Option<&str>, desktop: bool) -> Option<(String, String)> {
     match (harness, desktop) {
         (None, false) => None,
-        (None, true) => Some(("beambox-build-desktop".into(), "beambox-desktop-3".into())),
+        (None, true) => Some(("beambox-build-desktop".into(), "beambox-desktop-4".into())),
         (Some(h), d) => {
             let key = if d { format!("{h}-desktop") } else { h.to_string() };
-            Some((format!("{BUILD_PREFIX}{key}"), format!("beambox-{key}-4")))
+            Some((format!("{BUILD_PREFIX}{key}"), format!("beambox-{key}-5")))
         }
     }
 }
@@ -263,7 +264,7 @@ impl Core {
         let _ = self.backend.delete(&builder).await;
         let (image, script) = match harness {
             Some(h) => (agent::IMAGE, agent::agent_setup(h, desktop)),
-            None => ("alpine:3.22", agent::desktop_setup()),
+            None => (agent::IMAGE, agent::desktop_setup()),
         };
         let spec = Spec {
             name: builder.clone(),
@@ -509,11 +510,12 @@ mod tests {
     async fn desktop_template_gets_more_memory_and_a_vnc_port() {
         let (_, core) = core_with(|_| true);
         let info = core.create(CreateOpts { template: Some("desktop".into()), ..Default::default() }).await.unwrap();
-        assert_eq!(info.memory_mib, 512);
+        // A browser needs more than the base 256 MiB.
+        assert_eq!(info.memory_mib, 2048);
         assert_eq!(info.ports, [Port { guest: VNC_PORT, host: VNC_PORT }]);
         // `desktop: true` without a harness is the same thing.
         let info = core.create(CreateOpts { desktop: Some(true), ..Default::default() }).await.unwrap();
-        assert_eq!((info.template.as_str(), info.memory_mib), ("desktop", 512));
+        assert_eq!((info.template.as_str(), info.memory_mib), ("desktop", 2048));
     }
 
     #[tokio::test]
@@ -530,7 +532,7 @@ mod tests {
         let info = core.create(agent("fix the tests")).await.unwrap();
         assert_eq!(info.harness.as_deref(), Some("claude-code"));
         let spec = fake.specs.lock().unwrap().last().unwrap().clone();
-        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-claude-code:beambox-claude-code-4"));
+        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-claude-code:beambox-claude-code-5"));
         assert_eq!((spec.image.as_str(), spec.cpus, spec.memory_mib), ("debian:trixie-slim", 2, 2048));
         assert_eq!(spec.harness.as_deref(), Some("claude-code"));
         let execs = fake.execs.lock().unwrap().clone();
@@ -609,7 +611,7 @@ mod tests {
         let info = core.create(opts).await.unwrap();
         assert_eq!((info.template.as_str(), info.memory_mib), ("desktop", 4096));
         let spec = fake.specs.lock().unwrap().last().unwrap().clone();
-        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-4"));
+        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-5"));
     }
 
     #[tokio::test]
@@ -634,8 +636,8 @@ mod tests {
         let specs = fake.specs.lock().unwrap().clone();
         let snapshot = |name: &str| specs.iter().find(|s| s.name == name).unwrap().snapshot.clone().unwrap();
         assert_eq!(snapshot("a"), snapshot("b"));
-        assert_eq!(snapshot("c"), "beambox-build-codex-desktop:beambox-codex-desktop-4");
-        assert_eq!(snapshot("e"), "beambox-build-desktop:beambox-desktop-3");
+        assert_eq!(snapshot("c"), "beambox-build-codex-desktop:beambox-codex-desktop-5");
+        assert_eq!(snapshot("e"), "beambox-build-desktop:beambox-desktop-4");
         let c = specs.iter().find(|s| s.name == "c").unwrap();
         assert_eq!((c.memory_mib, c.ports.len(), c.template.as_str()), (4096, 1, "desktop"));
         let names: Vec<_> = core.backend.list().await.unwrap().into_iter().map(|s| s.name).collect();
@@ -645,7 +647,7 @@ mod tests {
     #[test]
     fn snapshot_names_are_group_and_member() {
         assert_eq!(snapshot_name(None, false), None);
-        assert_eq!(snapshot_name(Some("opencode"), true).unwrap(), "beambox-build-opencode-desktop:beambox-opencode-desktop-4");
+        assert_eq!(snapshot_name(Some("opencode"), true).unwrap(), "beambox-build-opencode-desktop:beambox-opencode-desktop-5");
         for (h, d) in [(None, true), (Some("codex"), false)] {
             assert!(snapshot_key(h, d).unwrap().0.starts_with(BUILD_PREFIX));
         }

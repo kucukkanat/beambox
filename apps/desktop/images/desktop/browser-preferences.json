@@ -1,0 +1,15 @@
+{
+  "browser": {
+    "custom_chrome_frame": false,
+    "has_seen_welcome_page": true,
+    "check_default_browser": false,
+    "show_home_button": false
+  },
+  "bookmark_bar": { "show_on_all_tabs": false },
+  "distribution": {
+    "import_bookmarks": false,
+    "make_chrome_default_for_user": false,
+    "skip_first_run_ui": true,
+    "suppress_first_run_default_browser_prompt": true
+  }
+}

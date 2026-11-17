@@ -1,0 +1,11 @@
+# The dock's defaults (Plank keeps its settings in dconf): always shown, icons magnify on hover like the macOS
+# Dock, and only the pinned browser and terminal (Plank can't reliably link xterm's window to its launcher, so a
+# running terminal would get a second, generic icon).
+[net/launchpad/plank/docks/dock1]
+hide-mode='none'
+pinned-only=true
+icon-size=48
+zoom-enabled=true
+zoom-percent=150
+theme='Default'
+dock-items=['browser.dockitem', 'terminal.dockitem']
