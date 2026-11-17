@@ -32,7 +32,7 @@ can watch them and step in through a GUI. One download, nothing else to install.
 - **Bundled runtime.** `npm run dev` / `npm run build` first run `scripts/fetch-runtime.mjs`, which downloads the
   `msb` + `libkrunfw` release matching the microsandbox version in `Cargo.lock` into `src-tauri/binaries/`
   (gitignored). `tauri.runtime.conf.json` bundles `msb` as a sidecar and `libkrunfw` as a resource. At startup the
-  app sets `MSB_PATH`, `MSB_LIBKRUNFW_PATH` and `MSB_HOME` (`<app data>/microsandbox`), so it never touches
+  app sets `MSB_PATH`, `MSB_LIBKRUNFW_PATH` and `MSB_HOME` (`~/.beambox` on macOS/Linux, because microsandbox socket paths must stay under 104 bytes; `<app data>/microsandbox` on Windows), so it never touches
   `~/.microsandbox` or installs anything system-wide. `cargo test` doesn't need the runtime.
 - **Shared state between the GUI and `--mcp` processes** lives in the app data dir
   (`~/Library/Application Support/app.beambox.desktop`, `~/.local/share/app.beambox.desktop`,

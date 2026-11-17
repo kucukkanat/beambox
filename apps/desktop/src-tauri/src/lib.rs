@@ -38,7 +38,8 @@ fn setup(context: &tauri::Context) -> (Arc<Core>, PathBuf) {
     let exe = std::env::current_exe().expect("no current exe");
     let resource_dir = tauri::utils::platform::resource_dir(context.package_info(), &tauri::Env::default())
         .unwrap_or_else(|_| exe.parent().expect("exe dir").to_path_buf());
-    paths::resolve(std::env::consts::OS, exe.parent().expect("exe dir"), &resource_dir, &data_dir).apply();
+    let home_dir = dirs::home_dir().expect("no home dir");
+    paths::resolve(std::env::consts::OS, exe.parent().expect("exe dir"), &resource_dir, &data_dir, &home_dir).apply();
     let core = Arc::new(Core::new(Arc::new(micro::MicroBackend), data_dir.clone()));
     (core, data_dir)
 }

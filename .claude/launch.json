@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "desktop",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", ". \"$HOME/.cargo/env\" && npm run dev -w @repo/desktop"],
+      "port": 1420
+    }
+  ]
+}
