@@ -1,0 +1,31 @@
+[package]
+name = "beambox"
+version = "0.1.0"
+description = "Beambox desktop: GUI workspaces for AI agents on microsandbox"
+license = "MIT"
+edition = "2024"
+publish = false
+
+[lib]
+name = "beambox_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2.12", features = [] }
+microsandbox = { version = "=0.7.15", default-features = false, features = ["local", "net"] }
+rmcp = { version = "3.10", features = ["server", "transport-io"] }
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.30"
+futures-util = "0.3"
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+microsandbox-utils = "=0.7.15"
+dirs = "6"
+percent-encoding = "2"
+
+[dev-dependencies]
+rmcp = { version = "3.10", features = ["client"] }

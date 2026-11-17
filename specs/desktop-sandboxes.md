@@ -1,12 +1,12 @@
 ---
-status: approved       # draft | approved | built | shipped
+status: built          # draft | approved | built | shipped
 size: large
 created: 2026-11-17T14:41Z
 shipped:
 diff:
 new_deps: 0
 bounces: 0
-review_findings: 0
+review_findings: 14
 ---
 
 # Beambox desktop: GUI workspaces for AI agents on microsandbox
@@ -82,6 +82,33 @@ and step in through a GUI. There is nothing else to install, no setup, and every
   - App licence: MIT.
 - macOS: sign with the hypervisor entitlement. Test early whether `disable-library-validation` is needed.
 - Template images are published to GHCR under the repo owner, and the app pulls them by digest.
+- Build-time choices (added by /build):
+  - The repo has no git remote yet, so nothing is on GHCR. `base` uses `alpine:3.22`, which is exactly what
+    `images/base` builds. `desktop` is a `ghcr.io/beambox/desktop:0.1` placeholder until release CI publishes it.
+    CI then pins both by digest in `core.rs` `TEMPLATES`.
+  - microsandbox 0.7.15 has no standalone image-pull API. The first create pulls the image (the ~4 MB `base`
+    takes a few seconds), so there is no background pre-pull.
+  - The `msb` + `libkrunfw` pair is downloaded by `scripts/fetch-runtime.mjs` before `tauri dev`/`build`. It goes
+    into a separate `tauri.runtime.conf.json`, so `cargo test`/`check` work without it.
+  - GUI and `--mcp` run as separate processes. They share take-over state through marker files and activity through
+    an `activity.jsonl` that the GUI tails, both in the app data dir. The sandboxes themselves are shared through
+    microsandbox's own database under `MSB_HOME`.
+  - Take-over rejects the agent's calls on that sandbox (`sandbox_exec`, `file_*`, `sandbox_stop`/`delete`).
+    `sandbox_create`/`sandbox_list` stay allowed.
+  - The activity feed records every MCP tool call on a sandbox (exec commands verbatim, file and lifecycle calls by
+    name). A call appears when it starts, and the same row gets its exit code when it ends.
+  - MCP `sandbox_create` takes only `name`, `template` and `ports`. Host folder mounts and network policy are GUI-only,
+    so an agent can't give itself host or LAN access.
+  - The noVNC WebSocket proxy accepts only the app's own webview origins, and the app runs one per sandbox.
+  - Deleting a sandbox clears its take-over, so a new sandbox that reuses the name starts free.
+  - File upload and download cross IPC as raw bytes (Tauri `ipc::Request`/`Response`).
+  - Publishing ports from the GUI uses an optional "Publish guest ports" field in the New sandbox popover (MCP:
+    `ports`). The desktop template always publishes guest 5900 for VNC. Forks get their own free host ports.
+  - Fork uses microsandbox's `dangerously_inherit_resources`: the child keeps its source's network policy and mounts.
+  - The frontend sends `{}` for one-click create. Defaults live once, in the Rust core.
+  - Delete removes the card right away and calls the backend after 5 s unless Undo is clicked.
+  - The image-size check is `scripts/check-image-size.mjs` (docker or podman). Its limit logic has a unit test, but
+    building and measuring the images is a CI/manual step: no container runtime is installed on the build machine.
 
 ## Out of scope
 - Intel Macs, Windows 10, and Linux without KVM.

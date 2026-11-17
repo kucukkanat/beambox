@@ -1,0 +1,9 @@
+#!/bin/sh
+# Beambox runs this after every boot. Starts the X desktop in the background and returns.
+export DISPLAY=:0
+pgrep Xvfb >/dev/null && exit 0
+setsid Xvfb :0 -screen 0 1280x800x24 -nolisten tcp >/tmp/xvfb.log 2>&1 &
+sleep 1
+setsid openbox >/tmp/openbox.log 2>&1 &
+# No VNC password: the port is only published on the host's 127.0.0.1.
+setsid x11vnc -display :0 -rfbport 5900 -forever -shared -nopw -quiet >/tmp/x11vnc.log 2>&1 &

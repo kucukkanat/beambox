@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <title>Beambox</title>
+  <rect width="1024" height="1024" rx="224" fill="#111827"/>
+  <path d="M512 232 760 372v280L512 792 264 652V372z" fill="none" stroke="#f9fafb" stroke-width="56" stroke-linejoin="round"/>
+  <path d="M264 372 512 512l248-140M512 512v280" fill="none" stroke="#f9fafb" stroke-width="56" stroke-linejoin="round"/>
+  <circle cx="512" cy="512" r="64" fill="#38bdf8"/>
+</svg>

@@ -27,7 +27,7 @@ specs/       feature specs for large features: the backlog.
 
 | Workspace | Path | Description |
 | --- | --- | --- |
-| _none yet_ | | Add one with `/new-workspace` in Claude Code |
+| `@repo/desktop` | [apps/desktop](apps/desktop) | Beambox: Tauri 2 desktop app + `--mcp` server for AI-agent microVM sandboxes (microsandbox) |
 
 ## Common commands
 

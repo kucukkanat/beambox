@@ -31,6 +31,12 @@ Record project-specific choices (frameworks, database, deploy target) here once 
 | CLI args, colours, prompts | `node:util` `parseArgs` / `styleText`, `node:readline/promises` |
 | HTTP client, timeouts, IDs | `fetch`, `AbortSignal.timeout()`, `crypto.randomUUID()` |
 | Env files | `node --env-file-if-exists=.env` |
+| Desktop app shell | Tauri 2 (`apps/desktop`; Rust in `src-tauri` is the one non-TS exception) |
+| microVM sandboxes | `microsandbox` crate, pinned `=0.7.15` (beta: upgrade deliberately) |
+| MCP server | `rmcp` |
+| Web UI | React + Vite, shadcn/ui on Tailwind v4, `motion`, `sonner` (toasts) |
+| Terminal / VNC in the UI | `@xterm/xterm`, `@novnc/novnc` |
+| UI tests | Vitest + Testing Library (jsdom); Rust: `cargo test`, called from the npm `test` script |
 | Add rows here as the project picks libraries | |
 
 ## Commands (repo root)
