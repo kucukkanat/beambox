@@ -33,7 +33,8 @@ Record project-specific choices (frameworks, database, deploy target) here once 
 | Env files | `node --env-file-if-exists=.env` |
 | Desktop app shell | Tauri 2 (`apps/desktop`; Rust in `src-tauri` is the one non-TS exception) |
 | microVM sandboxes | `microsandbox` crate, pinned `=0.7.15` (beta: upgrade deliberately) |
-| MCP server | `rmcp` |
+| MCP server | `@modelcontextprotocol/sdk`, bundled with `esbuild` (`apps/sandbox-mcp`) |
+| OS keychain (Rust) | `keyring` |
 | Rust CLI args, raw terminal | `clap` (derive), `crossterm` |
 | Web UI | React + Vite, shadcn/ui on Tailwind v4, `motion`, `sonner` (toasts) |
 | Terminal / VNC in the UI | `@xterm/xterm`, `@novnc/novnc` |

@@ -9,21 +9,23 @@ export type Sandbox = {
   status: Status;
   cpus: number;
   memoryMib: number;
-  agent: string | null;
+  /** The agent harness running in it, for agent sandboxes. */
+  harness: string | null;
   ports: Port[];
 };
+export type Harness = "claude-code" | "codex" | "opencode";
 /** Everything left out gets the Rust core's default (base, 1 vCPU, 256 MiB, auto name, public network). */
-export type CreateOpts = { template?: string; mount?: string; network?: string; ports?: number[] };
+export type CreateOpts = {
+  harness?: Harness;
+  /** The harness's first prompt. */
+  task?: string;
+  desktop?: boolean;
+  mount?: string;
+  network?: string;
+  ports?: number[];
+};
 export type DirEntry = { path: string; dir: boolean };
 export type Metrics = { cpuPercent: number; memoryBytes: number };
-/** A call's start event (exitCode null) and finish event share an id. */
-export type Activity = {
-  id: string;
-  sandbox: string;
-  agent: string;
-  command: string;
-  exitCode: number | null;
-};
 export type HypervisorState = "ok" | "missing" | "unsupported";
 export type Hypervisor = { state: HypervisorState; os: string };
 
@@ -41,11 +43,15 @@ export type Api = {
   writeFile(name: string, path: string, data: Uint8Array): Promise<void>;
   logs(name: string): Promise<string[]>;
   metrics(name: string): Promise<Metrics>;
+  /** Whether the agent is frozen (Take over). */
   takeover(name: string): Promise<boolean>;
   setTakeover(name: string, on: boolean): Promise<void>;
+  /** Names of the stored credentials (`anthropic`, `openai`), never their values. */
+  credentials(): Promise<string[]>;
+  setCredential(name: string, value: string): Promise<void>;
+  removeCredential(name: string): Promise<void>;
   hypervisor(): Promise<Hypervisor>;
   enableHypervisor(): Promise<void>;
-  mcpCommand(): Promise<string>;
   /** Put `beambox` on the PATH; resolves to what to tell the user. */
   installCli(): Promise<string>;
   /** The sandbox `beambox desktop` launched the window for, once. */
@@ -53,11 +59,11 @@ export type Api = {
   /** `beambox desktop <name>` while the window is already open. */
   onOpen(handler: (name: string) => void): () => void;
   desktopPort(name: string): Promise<number>;
+  /** The agent's tmux session in agent sandboxes, a login shell otherwise. */
   terminalOpen(name: string, onData: (data: Uint8Array) => void): Promise<number>;
   terminalInput(id: number, data: string): Promise<void>;
   terminalResize(id: number, rows: number, cols: number): Promise<void>;
   terminalClose(id: number): Promise<void>;
-  onActivity(handler: (event: Activity) => void): () => void;
 };
 
 export const tauriApi: Api = {
@@ -79,9 +85,11 @@ export const tauriApi: Api = {
   metrics: (name) => invoke("metrics", { name }),
   takeover: (name) => invoke("takeover", { name }),
   setTakeover: (name, on) => invoke("set_takeover", { name, on }),
+  credentials: () => invoke("credentials_list"),
+  setCredential: (name, value) => invoke("credentials_set", { name, value }),
+  removeCredential: (name) => invoke("credentials_remove", { name }),
   hypervisor: () => invoke("hypervisor_status"),
   enableHypervisor: () => invoke("enable_hypervisor"),
-  mcpCommand: () => invoke("mcp_command"),
   installCli: () => invoke("install_cli"),
   takeOpen: () => invoke("take_open"),
   onOpen: (handler) => {
@@ -97,8 +105,4 @@ export const tauriApi: Api = {
   terminalInput: (id, data) => invoke("terminal_input", { id, data }),
   terminalResize: (id, rows, cols) => invoke("terminal_resize", { id, rows, cols }),
   terminalClose: (id) => invoke("terminal_close", { id }),
-  onActivity: (handler) => {
-    const unlisten = listen<Activity>("activity", (event) => handler(event.payload));
-    return () => void unlisten.then((stop) => stop());
-  },
 };

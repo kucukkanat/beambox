@@ -1,7 +1,7 @@
 [package]
 name = "beambox"
 version = "0.1.0"
-description = "Beambox desktop: GUI workspaces for AI agents on microsandbox"
+description = "Beambox desktop: microVM computers for AI agents, on microsandbox"
 license = "MIT"
 edition = "2024"
 publish = false
@@ -16,7 +16,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2.12", features = [] }
 microsandbox = { version = "=0.7.15", default-features = false, features = ["local", "net"] }
-rmcp = { version = "3.10", features = ["server", "transport-io"] }
+keyring = "4.2"
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.30"
 futures-util = "0.3"
@@ -32,9 +32,6 @@ tauri-plugin-single-instance = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
-
-[dev-dependencies]
-rmcp = { version = "3.10", features = ["client"] }
 
 # Faster incremental builds: line numbers in backtraces but no full debug info, and none for dependencies.
 [profile.dev]

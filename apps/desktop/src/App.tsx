@@ -1,7 +1,7 @@
 import { MotionConfig } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
 import { Toaster, toast } from "sonner";
-import type { Activity, Api, CreateOpts, Sandbox, Status } from "./api.ts";
+import type { Api, CreateOpts, Sandbox, Status } from "./api.ts";
 import { Home } from "./Home.tsx";
 import { HypervisorCard } from "./HypervisorCard.tsx";
 import { spring, useReducedMotion } from "./motion.ts";
@@ -29,28 +29,14 @@ export function App({ api }: { api: Api }) {
     (name: string, tab = "terminal") => setOpened((o) => ({ name, tab, n: (o?.n ?? 0) + 1 })),
     [],
   );
-  const [activity, setActivity] = useState<Activity[]>([]);
 
-  // Polling also picks up sandboxes that agents create over MCP.
+  // Polling also picks up sandboxes created from the command line.
   const refresh = useCallback(() => api.list().then(setSandboxes, () => {}), [api]);
   useEffect(() => {
     void refresh();
     const timer = setInterval(refresh, 2000);
     return () => clearInterval(timer);
   }, [refresh]);
-  // A finish event replaces its call's start event in place.
-  useEffect(
-    () =>
-      api.onActivity((event) =>
-        setActivity((all) =>
-          all.some((a) => a.id === event.id)
-            ? all.map((a) => (a.id === event.id ? event : a))
-            : [...all.slice(-499), event],
-        ),
-      ),
-    [api],
-  );
-
   // `beambox desktop <name>` opens a sandbox's desktop, at launch or in the running window.
   useEffect(() => {
     void api.takeOpen().then(
@@ -68,8 +54,15 @@ export function App({ api }: { api: Api }) {
   const actions: Actions = {
     create: (opts) => {
       const call = api.create(opts);
-      // The first Desktop sandbox builds the desktop snapshot (~10 s); later ones boot from it in ~1 s.
-      if (opts.template === "desktop")
+      // The first sandbox of each kind builds its snapshot (~10 s for a desktop, a few minutes for an agent);
+      // later ones boot from it in seconds.
+      if (opts.harness)
+        toast.promise(call, {
+          loading: `Starting ${opts.harness}… the first one takes a few minutes`,
+          success: (s) => `${s.name} is ready`,
+          error: () => `Couldn't start ${opts.harness}`,
+        });
+      else if (opts.desktop)
         toast.promise(call, {
           loading: "Starting the desktop… the first one takes about 10 seconds",
           success: (s) => `${s.name} is ready`,
@@ -124,7 +117,6 @@ export function App({ api }: { api: Api }) {
             initialTab={opened.tab}
             api={api}
             sandbox={open}
-            activity={activity.filter((a) => a.sandbox === open.name)}
             onBack={() => setOpened(null)}
           />
         ) : (

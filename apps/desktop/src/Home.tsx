@@ -1,8 +1,8 @@
 import { AnimatePresence, motion } from "motion/react";
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import type { Actions } from "./App.tsx";
-import type { Api, CreateOpts, Sandbox } from "./api.ts";
+import type { Api, CreateOpts, Harness, Sandbox } from "./api.ts";
 import { Button } from "./components/ui/button.tsx";
 import { Card } from "./components/ui/card.tsx";
 import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover.tsx";
@@ -17,12 +17,13 @@ export function Home({ api, sandboxes, actions, onOpen }: Props) {
       <header className="flex items-center gap-2">
         <h1 className="mr-auto font-semibold text-xl">Sandboxes</h1>
         <Licences />
-        <ConnectAgent api={api} />
+        <Settings api={api} />
+        <InstallCli api={api} />
         <NewSandbox onCreate={actions.create} />
       </header>
       {sandboxes.length === 0 && (
         <p className="text-muted-foreground text-sm">
-          No sandboxes yet. Create one, or connect an agent and let it.
+          No sandboxes yet. Create one, or pick an agent under ▾ to give it a computer and a task.
         </p>
       )}
       <div className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-4">
@@ -82,7 +83,8 @@ function SandboxCard({
           </span>
         </div>
         <p className="text-muted-foreground text-xs">
-          {s.agent ? `by ${s.agent}` : "by you"} · {s.cpus} vCPU · {s.memoryMib} MiB
+          {s.harness ? `${s.harness} · ` : ""}
+          {s.cpus} vCPU · {s.memoryMib} MiB
         </p>
         <Sparkline api={api} sandbox={s} />
         <div className="flex flex-wrap gap-1">
@@ -155,13 +157,24 @@ function Sparkline({ api, sandbox }: { api: Api; sandbox: Sandbox }) {
   );
 }
 
+const HARNESSES: [Harness, string][] = [
+  ["claude-code", "Claude Code"],
+  ["codex", "Codex CLI"],
+  ["opencode", "OpenCode"],
+];
+
 function NewSandbox({ onCreate }: { onCreate(opts: CreateOpts): void }) {
   const [open, setOpen] = useState(false);
+  const [harness, setHarness] = useState("");
+  const [desktop, setDesktop] = useState(false);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const text = (key: string) => String(form.get(key) ?? "").trim();
-    const opts: CreateOpts = { template: text("template"), network: text("network") };
+    const opts: CreateOpts = { network: text("network") };
+    if (harness) opts.harness = harness as Harness;
+    if (harness && text("task")) opts.task = text("task");
+    if (desktop) opts.desktop = true;
     if (text("mount")) opts.mount = text("mount");
     const ports = text("ports")
       .split(/[\s,]+/)
@@ -187,14 +200,44 @@ function NewSandbox({ onCreate }: { onCreate(opts: CreateOpts): void }) {
             ▾
           </Button>
         </PopoverTrigger>
-        <PopoverContent>
+        <PopoverContent className="w-80">
           <form onSubmit={submit} className="flex flex-col gap-3">
             <label className={field}>
-              Template
-              <select name="template" className={input}>
-                <option value="base">Base (Alpine, 256 MiB)</option>
-                <option value="desktop">Desktop (VNC, 512 MiB)</option>
+              Harness
+              <select
+                name="harness"
+                className={input}
+                value={harness}
+                onChange={(e) => setHarness(e.target.value)}
+              >
+                <option value="">None: a plain sandbox</option>
+                {HARNESSES.map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
               </select>
+            </label>
+            <label className={field}>
+              Task
+              <textarea
+                name="task"
+                rows={3}
+                disabled={!harness}
+                placeholder={harness ? "Fix the failing tests" : "Pick a harness first"}
+                className="rounded-md border border-border bg-background px-2 py-1 disabled:opacity-50"
+              />
+            </label>
+            <label className="flex items-center justify-between gap-2 text-sm">
+              Desktop
+              <input
+                type="checkbox"
+                role="switch"
+                aria-checked={desktop}
+                checked={desktop}
+                onChange={(e) => setDesktop(e.target.checked)}
+                className="size-4 accent-primary"
+              />
             </label>
             <label className={field}>
               Mount a folder at /workspace
@@ -220,51 +263,94 @@ function NewSandbox({ onCreate }: { onCreate(opts: CreateOpts): void }) {
   );
 }
 
-function ConnectAgent({ api }: { api: Api }) {
-  const [command, setCommand] = useState("");
-  useEffect(() => void api.mcpCommand().then(setCommand, () => {}), [api]);
-  const json = JSON.stringify({ mcpServers: { beambox: { command, args: ["--mcp"] } } }, null, 2);
-  const configs = [
-    ["Claude Code", `claude mcp add beambox -- "${command}" --mcp`],
-    ["Cursor (~/.cursor/mcp.json)", json],
-    ["Other MCP clients", json],
-  ] as const;
-  const installCli = () =>
+function InstallCli({ api }: { api: Api }) {
+  const install = () =>
     void api.installCli().then(
       (message) => toast.success(message),
       (error) => toast.error(String(error)),
     );
-  const copy = (label: string, text: string) =>
-    navigator.clipboard.writeText(text).then(
-      () => toast.success(`Copied the ${label} config`),
-      () => toast.error("Couldn't copy to the clipboard"),
-    );
   return (
-    <Popover>
+    <Button variant="outline" onClick={install}>
+      Install the beambox command
+    </Button>
+  );
+}
+
+const PROVIDERS = [
+  ["anthropic", "Anthropic API key, or a token from claude setup-token. Used by Claude Code and OpenCode."],
+  ["openai", "OpenAI API key. Used by Codex CLI, and by OpenCode when there's no Anthropic key."],
+] as const;
+
+/** Settings → Credentials: keys stored once in the OS keychain and given to each harness at start. */
+function Settings({ api }: { api: Api }) {
+  const [stored, setStored] = useState<string[]>([]);
+  const load = useCallback(() => void api.credentials().then(setStored, () => {}), [api]);
+  const save = (event: FormEvent<HTMLFormElement>, name: string) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const value = String(new FormData(form).get("value") ?? "");
+    void api.setCredential(name, value).then(() => {
+      form.reset();
+      toast.success(`Stored the ${name} credential`);
+      load();
+    }, showError);
+  };
+  const remove = (name: string) => void api.removeCredential(name).then(load, showError);
+  return (
+    <Popover onOpenChange={(open) => open && load()}>
       <PopoverTrigger asChild>
-        <Button variant="outline">Connect an agent</Button>
+        <Button variant="ghost">Settings</Button>
       </PopoverTrigger>
-      <PopoverContent className="w-80">
-        <p className="mb-3 text-muted-foreground text-sm">
-          Copy a config, paste it into your agent, and it can create and use sandboxes.
+      <PopoverContent className="w-96 text-sm">
+        <h2 className="mb-1 font-medium">Credentials</h2>
+        <p className="mb-3 text-muted-foreground text-xs">
+          Kept in your system keychain. Agents get them as environment variables, never on their disk.
         </p>
-        <div className="flex flex-col gap-2">
-          {configs.map(([label, text]) => (
-            <Button key={label} variant="outline" className="justify-start" onClick={() => copy(label, text)}>
-              Copy for {label}
-            </Button>
-          ))}
+        <div className="flex flex-col gap-4">
+          {PROVIDERS.map(([name, help]) => {
+            const has = stored.includes(name);
+            return (
+              <form key={name} onSubmit={(e) => save(e, name)} className="flex flex-col gap-1">
+                <div className="flex items-center gap-2">
+                  <span className="mr-auto font-medium">
+                    {name}: {has ? "stored" : "not set"}
+                  </span>
+                  {has && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      aria-label={`Remove ${name}`}
+                      onClick={() => remove(name)}
+                    >
+                      Remove
+                    </Button>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    name="value"
+                    type="password"
+                    autoComplete="off"
+                    aria-label={`${name} key or token`}
+                    placeholder={has ? "Replace…" : "Paste a key"}
+                    className="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2"
+                  />
+                  <Button type="submit" size="sm" aria-label={`Save ${name}`}>
+                    Save
+                  </Button>
+                </div>
+                <p className="text-muted-foreground text-xs">{help}</p>
+              </form>
+            );
+          })}
         </div>
-        <p className="mt-4 mb-2 text-muted-foreground text-sm">
-          Or use Beambox from a terminal: <code>beambox --help</code>
-        </p>
-        <Button variant="outline" className="w-full justify-start" onClick={installCli}>
-          Install the beambox command
-        </Button>
       </PopoverContent>
     </Popover>
   );
 }
+
+const showError = (error: unknown) => void toast.error(String(error));
 
 function Licences() {
   const items = [

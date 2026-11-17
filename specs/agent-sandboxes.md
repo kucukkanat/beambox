@@ -1,12 +1,12 @@
 ---
-status: approved      # draft | approved | built | shipped
+status: built         # draft | approved | built | shipped
 size: large
 created: 2026-11-17T19:10Z
 shipped:
 diff:
-new_deps: 0
+new_deps: 3
 bounces: 0
-review_findings: 0
+review_findings: 14
 ---
 
 # Agent sandboxes: each agent gets its own computer
@@ -86,6 +86,32 @@ sandboxes and let you watch, talk to and pause the agent.
   bumping the member name, as today.
 - Stopping and starting an agent sandbox restarts the harness in a new tmux session, without the task (the
   harness keeps its own history).
+- Added while building:
+  - Harnesses install from npm (`@anthropic-ai/claude-code`, `@openai/codex`, `opencode-ai`), the documented
+    install for all three: one mechanism, and Node 24 (from NodeSource) is in every agent snapshot anyway.
+  - OpenCode uses the Anthropic credential, else the OpenAI one. An Anthropic credential starting `sk-ant-oat`
+    (from `claude setup-token`) is passed as `CLAUDE_CODE_OAUTH_TOKEN`, anything else as `ANTHROPIC_API_KEY`.
+  - Harnesses run with their default permission prompts; you answer them in the Terminal tab. Claude Code's
+    onboarding is marked done in `/root/.claude.json`, but its "use this API key?" prompt is left to you, since
+    answering it ahead would write part of the key to disk.
+  - When the harness exits, `bash -l` stays in the tmux session. `attach` and the Terminal tab fall back to a
+    login shell when the session is gone.
+  - Take over stops the pane's process group minus tmux's own pane shell: tmux sends SIGCONT to a pane process
+    it sees stop. It also opens a shell in a new tmux window, so typing doesn't queue up for the frozen agent;
+    Hand back switches back to window 0. With no harness process left, take over fails with "no agent is running".
+  - After tmux starts the harness, the credential is removed from tmux's global environment and unset before the
+    fallback shell, so only the harness process has it.
+  - Snapshot builds are serialised by `snapshot-build.lock` in the app data dir, so concurrent creates in the app
+    and the CLI also build once.
+  - `-t desktop` with a harness means an agent desktop, like `--desktop`. OpenCode skips a Claude subscription
+    token (it only takes API keys) and falls back to the OpenAI key.
+  - A fork starts its harness again without the task, like a restart. Take over is only shown for agent
+    sandboxes. `/etc/beambox/sandbox.json` (name, harness, desktop) is written at each start for `sandbox_info`.
+  - The popover's Desktop switch replaces the Template menu: without a harness it makes the `desktop` template.
+    `beambox create -t desktop` still works.
+  - `scripts/cargo.mjs` bundles `apps/sandbox-mcp` before every cargo command, since the Rust code embeds it.
+  - On Debian the desktop also needs `procps` and `net-tools` (for `start-desktop`) and an `xterm.desktop` link
+    for the panel launcher.
 
 ## Out of scope
 - Custom MCP tools beyond `sandbox_info`, including screenshot, click and type tools for the desktop.

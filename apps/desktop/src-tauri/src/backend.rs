@@ -1,4 +1,4 @@
-//! The `SandboxBackend` trait that the GUI and the MCP server both talk to, plus its data types.
+//! The `SandboxBackend` trait that the GUI and the CLI both talk to, plus its data types.
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -32,7 +32,8 @@ pub struct Spec {
     /// `public` (internet, no host LAN), `none` or `all`.
     pub network: String,
     pub ports: Vec<Port>,
-    pub agent: Option<String>,
+    /// The agent harness installed in it (`claude-code`, `codex`, `opencode`), if any.
+    pub harness: Option<String>,
     /// Boot from this local disk snapshot instead of `image`.
     pub snapshot: Option<String>,
 }
@@ -45,7 +46,7 @@ pub struct SandboxInfo {
     pub status: Status,
     pub cpus: u8,
     pub memory_mib: u32,
-    pub agent: Option<String>,
+    pub harness: Option<String>,
     pub ports: Vec<Port>,
 }
 
@@ -84,6 +85,8 @@ pub trait SandboxBackend: Send + Sync {
     async fn delete(&self, name: &str) -> Result<()>;
     /// Run `command` through `/bin/sh -c`.
     async fn exec(&self, name: &str, command: &str) -> Result<ExecResult>;
+    /// `exec` with extra environment variables for that one process. The only way a credential enters a sandbox.
+    async fn exec_env(&self, name: &str, command: &str, env: &[(String, String)]) -> Result<ExecResult>;
     async fn read_file(&self, name: &str, path: &str) -> Result<Vec<u8>>;
     async fn write_file(&self, name: &str, path: &str, data: Vec<u8>) -> Result<()>;
     async fn list_dir(&self, name: &str, path: &str) -> Result<Vec<DirEntry>>;
@@ -104,8 +107,12 @@ pub mod fake {
         pub specs: Mutex<Vec<Spec>>,
         pub files: Mutex<BTreeMap<(String, String), Vec<u8>>>,
         pub snapshots: Mutex<BTreeSet<String>>,
-        /// Every `(sandbox, command)` passed to `exec`.
+        /// Every `(sandbox, command)` passed to `exec` or `exec_env`.
         pub execs: Mutex<Vec<(String, String)>>,
+        /// The environment of every `exec_env` call, by sandbox.
+        pub envs: Mutex<Vec<(String, Vec<(String, String)>)>>,
+        /// Canned results for exact commands, for commands the `echo` interpreter can't fake.
+        pub replies: Mutex<BTreeMap<String, ExecResult>>,
     }
 
     impl FakeBackend {
@@ -118,6 +125,8 @@ pub mod fake {
     #[async_trait]
     impl SandboxBackend for FakeBackend {
         async fn create(&self, spec: Spec) -> Result<SandboxInfo> {
+            // Like a real boot, give other tasks a turn, so concurrent creates really interleave.
+            tokio::task::yield_now().await;
             if let Some(snapshot) = &spec.snapshot {
                 if !self.snapshots.lock().unwrap().contains(snapshot) {
                     return Err(format!("snapshot not found: {snapshot}"));
@@ -129,7 +138,7 @@ pub mod fake {
                 status: Status::Running,
                 cpus: spec.cpus,
                 memory_mib: spec.memory_mib,
-                agent: spec.agent.clone(),
+                harness: spec.harness.clone(),
                 ports: spec.ports.clone(),
             };
             self.specs.lock().unwrap().push(spec);
@@ -165,8 +174,12 @@ pub mod fake {
             self.sandboxes.lock().unwrap().remove(name).map(|_| ()).ok_or_else(|| format!("no sandbox named {name}"))
         }
         async fn exec(&self, name: &str, command: &str) -> Result<ExecResult> {
+            tokio::task::yield_now().await;
             self.with(name, |_| ())?;
             self.execs.lock().unwrap().push((name.to_string(), command.to_string()));
+            if let Some(reply) = self.replies.lock().unwrap().get(command) {
+                return Ok(reply.clone());
+            }
             // `echo out; echo err >&2; exit 3` style commands, enough to prove the plumbing.
             let mut result = ExecResult { stdout: String::new(), stderr: String::new(), exit_code: 0 };
             for part in command.split(';').map(str::trim) {
@@ -179,6 +192,10 @@ pub mod fake {
                 }
             }
             Ok(result)
+        }
+        async fn exec_env(&self, name: &str, command: &str, env: &[(String, String)]) -> Result<ExecResult> {
+            self.envs.lock().unwrap().push((name.to_string(), env.to_vec()));
+            self.exec(name, command).await
         }
         async fn read_file(&self, name: &str, path: &str) -> Result<Vec<u8>> {
             let files = self.files.lock().unwrap();

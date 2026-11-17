@@ -1,24 +1,25 @@
-import { AnimatePresence, motion } from "motion/react";
 import { type DragEvent, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import type { Activity, Api, DirEntry, Sandbox } from "./api.ts";
+import type { Api, DirEntry, Sandbox } from "./api.ts";
 import { Button } from "./components/ui/button.tsx";
 import { Card } from "./components/ui/card.tsx";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs.tsx";
 import { Desktop } from "./Desktop.tsx";
 import { StatusDot } from "./Home.tsx";
 import { cn } from "./lib/utils.ts";
-import { useItemMotion } from "./motion.ts";
 import { Terminal } from "./Terminal.tsx";
 
-type Props = { api: Api; sandbox: Sandbox; activity: Activity[]; initialTab?: string; onBack(): void };
+type Props = { api: Api; sandbox: Sandbox; initialTab?: string; onBack(): void };
 const showError = (error: unknown) => void toast.error(String(error));
 
-export function SandboxView({ api, sandbox: s, activity, initialTab = "terminal", onBack }: Props) {
+export function SandboxView({ api, sandbox: s, initialTab = "terminal", onBack }: Props) {
   const [tab, setTab] = useState(initialTab);
   const [openPorts, setOpenPorts] = useState<number[]>([]);
   const [takenOver, setTakenOver] = useState(false);
-  useEffect(() => void api.takeover(s.name).then(setTakenOver, () => {}), [api, s.name]);
+  const agent = s.harness !== null && s.status === "running";
+  useEffect(() => {
+    if (agent) void api.takeover(s.name).then(setTakenOver, () => {});
+  }, [api, s.name, agent]);
 
   const toggleTakeover = () =>
     void api.setTakeover(s.name, !takenOver).then(() => setTakenOver(!takenOver), showError);
@@ -37,80 +38,55 @@ export function SandboxView({ api, sandbox: s, activity, initialTab = "terminal"
         </Button>
         <StatusDot status={s.status} />
         <h1 className="font-semibold text-xl">{s.name}</h1>
-        <span className="mr-auto text-muted-foreground text-sm">{s.template}</span>
-        <Button variant={takenOver ? "destructive" : "outline"} onClick={toggleTakeover}>
-          {takenOver ? "Hand back" : "Take over"}
-        </Button>
+        <span className="mr-auto text-muted-foreground text-sm">
+          {s.harness ? `${s.harness} · ${s.template}` : s.template}
+        </span>
+        {/* Take over freezes the agent (SIGSTOP) so you can use the terminal and desktop; Hand back resumes it. */}
+        {agent && (
+          <Button variant={takenOver ? "destructive" : "outline"} onClick={toggleTakeover}>
+            {takenOver ? "Hand back" : "Take over"}
+          </Button>
+        )}
       </header>
-      <div className="grid min-h-0 flex-1 grid-cols-[1fr_300px] gap-4">
-        <Tabs value={tab} onValueChange={setTab} className="flex min-h-0 flex-col gap-2">
-          <TabsList>
-            <TabsTrigger value="terminal">Terminal</TabsTrigger>
-            <TabsTrigger value="files">Files</TabsTrigger>
-            <TabsTrigger value="logs">Logs</TabsTrigger>
-            <TabsTrigger value="ports">Ports</TabsTrigger>
-            {s.template === "desktop" && <TabsTrigger value="desktop">Desktop</TabsTrigger>}
-            {openPorts.map((port) => (
-              <TabsTrigger key={port} value={`port-${port}`}>
-                :{port}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-          <TabsContent value="terminal" className="overflow-hidden rounded-lg bg-black p-2">
-            {running ? <Terminal api={api} name={s.name} /> : needsRunning}
-          </TabsContent>
-          <TabsContent value="files">
-            {running ? <Files api={api} name={s.name} /> : needsRunning}
-          </TabsContent>
-          <TabsContent value="logs">
-            <Logs api={api} name={s.name} />
-          </TabsContent>
-          <TabsContent value="ports">
-            <Ports sandbox={s} onOpen={openPort} />
-          </TabsContent>
-          {s.template === "desktop" && (
-            <TabsContent value="desktop" className="overflow-hidden rounded-lg">
-              {running ? <Desktop api={api} name={s.name} /> : needsRunning}
-            </TabsContent>
-          )}
+      <Tabs value={tab} onValueChange={setTab} className="flex min-h-0 flex-1 flex-col gap-2">
+        <TabsList>
+          <TabsTrigger value="terminal">Terminal</TabsTrigger>
+          <TabsTrigger value="files">Files</TabsTrigger>
+          <TabsTrigger value="logs">Logs</TabsTrigger>
+          <TabsTrigger value="ports">Ports</TabsTrigger>
+          {s.template === "desktop" && <TabsTrigger value="desktop">Desktop</TabsTrigger>}
           {openPorts.map((port) => (
-            <TabsContent key={port} value={`port-${port}`}>
-              <iframe
-                title={`Port ${port}`}
-                src={`http://127.0.0.1:${port}`}
-                className="size-full rounded-lg border border-border"
-              />
-            </TabsContent>
+            <TabsTrigger key={port} value={`port-${port}`}>
+              :{port}
+            </TabsTrigger>
           ))}
-        </Tabs>
-        <ActivityFeed activity={activity} />
-      </div>
+        </TabsList>
+        <TabsContent value="terminal" className="overflow-hidden rounded-lg bg-black p-2">
+          {running ? <Terminal api={api} name={s.name} /> : needsRunning}
+        </TabsContent>
+        <TabsContent value="files">{running ? <Files api={api} name={s.name} /> : needsRunning}</TabsContent>
+        <TabsContent value="logs">
+          <Logs api={api} name={s.name} />
+        </TabsContent>
+        <TabsContent value="ports">
+          <Ports sandbox={s} onOpen={openPort} />
+        </TabsContent>
+        {s.template === "desktop" && (
+          <TabsContent value="desktop" className="overflow-hidden rounded-lg">
+            {running ? <Desktop api={api} name={s.name} /> : needsRunning}
+          </TabsContent>
+        )}
+        {openPorts.map((port) => (
+          <TabsContent key={port} value={`port-${port}`}>
+            <iframe
+              title={`Port ${port}`}
+              src={`http://127.0.0.1:${port}`}
+              className="size-full rounded-lg border border-border"
+            />
+          </TabsContent>
+        ))}
+      </Tabs>
     </div>
-  );
-}
-
-function ActivityFeed({ activity }: { activity: Activity[] }) {
-  const item = useItemMotion();
-  return (
-    <Card className="flex min-h-0 flex-col p-3">
-      <h2 className="mb-2 font-medium text-sm">Agent activity</h2>
-      {activity.length === 0 && (
-        <p className="text-muted-foreground text-xs">Commands an agent runs here show up live.</p>
-      )}
-      <ol className="flex min-h-0 flex-col gap-1 overflow-y-auto font-mono text-xs">
-        <AnimatePresence initial={false}>
-          {activity.map((a) => (
-            <motion.li key={a.id} {...item} className="rounded bg-muted px-2 py-1">
-              <span className="text-muted-foreground">{a.agent} $</span> {a.command}
-              {a.exitCode === null && <span className="text-muted-foreground"> (running…)</span>}
-              {a.exitCode !== null && a.exitCode !== 0 && (
-                <span className="text-destructive"> (exit {a.exitCode})</span>
-              )}
-            </motion.li>
-          ))}
-        </AnimatePresence>
-      </ol>
-    </Card>
   );
 }
 

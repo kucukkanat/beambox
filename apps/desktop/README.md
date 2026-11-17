@@ -1,15 +1,19 @@
 # @repo/desktop
 
-Beambox desktop: a Tauri 2 app where AI agents get their own microVM sandboxes (microsandbox 0.7.15), and you
-can watch them and step in through a GUI. One download, nothing else to install.
+Beambox desktop: a Tauri 2 app that gives each AI agent its own computer, a microVM sandbox (microsandbox
+0.7.15), and lets you watch it, talk to it and take over. One download, nothing else to install.
 
+- **Agent sandboxes**: pick a harness (Claude Code, Codex CLI or OpenCode), a task and optionally a desktop.
+  Beambox boots a Debian sandbox with the harness installed and Beambox's MCP server
+  ([`apps/sandbox-mcp`](../sandbox-mcp)) registered in it, and starts the harness on the task in the tmux session
+  `agent`. The Terminal tab and `beambox attach` join that session, so you see the agent and can type to it.
+  Agents never run on your computer; the app and CLI only manage sandboxes.
 - **GUI**: a grid of sandbox cards (start, stop, fork, snapshot, delete with 5 s undo). Each sandbox has Terminal,
-  Files, Logs, Ports and, for the `desktop` template, a noVNC Desktop tab, plus a live feed of agent commands
-  with **Take over**, which pauses the agent's MCP calls on that sandbox.
-- **MCP**: `beambox --mcp` is a stdio MCP server with `sandbox_create`, `sandbox_list`, `sandbox_exec`,
-  `file_read`, `file_write`, `sandbox_stop` and `sandbox_delete`. **Connect an agent** copies a ready config.
-  Sandboxes an agent creates are labelled `beambox.agent=<client name>`. Agents choose a name, template and
-  ports; host folder mounts and network policy are GUI-only.
+  Files, Logs, Ports and, with a desktop, a noVNC Desktop tab. Agent sandboxes also get **Take over**, which
+  freezes the harness (SIGSTOP) so you can use the terminal and desktop undisturbed, and **Hand back** (SIGCONT).
+- **Credentials** (Settings → Credentials, or `beambox credentials`): an Anthropic key or `claude setup-token`
+  token and an OpenAI key, stored in the OS keychain (`keyring` crate) and passed only as the harness process's
+  environment at start: never written to the sandbox's disk, exec arguments or logs.
 - **CLI**: the same `beambox` binary run with a command. Everything the window does, from a terminal (see
   [Command line](#command-line)).
 - **Desktop tab**: noVNC connects to a per-sandbox proxy on 127.0.0.1 that only accepts the app's own webview
@@ -21,15 +25,16 @@ can watch them and step in through a GUI. One download, nothing else to install.
 | --- | --- |
 | `src/` | React + Vite UI (shadcn/ui on Tailwind v4, Motion, xterm.js, noVNC, sonner). `api.ts` is the only Tauri boundary. |
 | `src-tauri/src/backend.rs` | `SandboxBackend` trait (+ in-memory fake for tests) |
-| `src-tauri/src/core.rs` | Defaults, templates, naming, host-port picking, take-over, activity events. Shared by GUI and MCP. |
+| `src-tauri/src/core.rs` | Defaults, templates, naming, host-port picking, snapshot builds, agent start, take-over. Shared by GUI and CLI. |
+| `src-tauri/src/agent.rs` | Harnesses: install scripts, MCP configs, tmux start command, the embedded `mcp.js` |
+| `src-tauri/src/credentials.rs` | `Secrets` trait on the OS keychain (+ in-memory fake for tests) |
 | `src-tauri/src/micro.rs` | The trait on the microsandbox SDK |
-| `src-tauri/src/mcp.rs` | The `--mcp` server (rmcp) |
 | `src-tauri/src/cli.rs` | The command line (clap), argument → mode dispatch, `beambox shell` (crossterm), PATH install |
 | `src-tauri/src/proxy.rs` | TCP→WebSocket proxy for noVNC (replaces websockify) |
 | `src-tauri/src/paths.rs`, `hypervisor.rs`, `ports.rs` | Bundled runtime paths, hypervisor check, port picking |
 | `images/base/Dockerfile` | Base template image (≤ 10 MB unpacked) |
-| `images/desktop/` | The Desktop template: `start-desktop` (runs after each boot), `Xresources`, `theme.sh`; built in by `desktop_setup()` in `core.rs` |
-| `scripts/` | `fetch-runtime.mjs`, `check-image-size.mjs`, `cargo.mjs` (runs cargo even if `~/.cargo/bin` isn't on PATH) |
+| `images/desktop/` | The desktop: `start-desktop` (runs after each boot), `Xresources`, `theme.sh`; built in by `desktop_setup()` (Alpine) and `agent_setup()` (Debian) in `agent.rs` |
+| `scripts/` | `fetch-runtime.mjs`, `check-image-size.mjs`, `cargo.mjs` (bundles `apps/sandbox-mcp`, then runs cargo even if `~/.cargo/bin` isn't on PATH) |
 
 ## How it fits together
 
@@ -38,14 +43,23 @@ can watch them and step in through a GUI. One download, nothing else to install.
   (gitignored). `tauri.runtime.conf.json` bundles `msb` as a sidecar and `libkrunfw` as a resource. At startup the
   app sets `MSB_PATH`, `MSB_LIBKRUNFW_PATH` and `MSB_HOME` (`~/.beambox` on macOS/Linux, because microsandbox socket paths must stay under 104 bytes; `<app data>/microsandbox` on Windows), so it never touches
   `~/.microsandbox` or installs anything system-wide. `cargo test` doesn't need the runtime.
-- **One binary, three modes** (`cli::mode`): no arguments opens the window, `--mcp` (or `mcp`) serves MCP, anything
-  else is a CLI command. `--open <name>` opens the window on a sandbox's desktop; a second launch hands its
+- **One binary, two modes** (`cli::mode`): no arguments opens the window, anything else is a CLI command. `--open <name>` opens the window on a sandbox's desktop; a second launch hands its
   arguments to the running window (`tauri-plugin-single-instance`) and exits.
-- **Shared state between the GUI, CLI and `--mcp` processes** lives in the app data dir
-  (`~/Library/Application Support/app.beambox.desktop`, `~/.local/share/app.beambox.desktop`,
-  `%APPDATA%\app.beambox.desktop`): microsandbox's own database, `takeover/<sandbox>` marker files and
-  `activity.jsonl`, which MCP and `--agent` CLI processes append to and the GUI tails.
-- **Templates** are labelled `beambox.template`. Image refs live in `TEMPLATES` in `core.rs`.
+- **Shared state between the GUI and CLI processes** is microsandbox's own database (sandbox labels
+  `beambox.template` and `beambox.harness`) and the OS keychain (service `app.beambox.desktop`). Take-over state
+  is the harness's own process state in the sandbox, so every process sees the same thing.
+- **Templates**: image refs live in `TEMPLATES` in `core.rs`. Agent sandboxes keep `base` or `desktop` as their
+  template and add the harness.
+- **Agent start** (`Core::create`, `Core::start`, `Core::fork`): write `/etc/beambox/sandbox.json` (what the MCP
+  server's `sandbox_info` returns), then `tmux new-session -d -s agent -c /workspace '<harness> <task>; exec bash -l'`
+  through `exec_env`, the one backend call that takes environment variables. The tmux server inherits the
+  credential from that exec and passes it to the harness; then it is removed from tmux's global environment and
+  unset before the fallback shell, so new tmux windows don't get it. A restart or fork starts the harness again without the
+  task (it keeps its own history).
+- **Take over** sends SIGSTOP to the harness's processes: the tmux pane's process group minus the pane's own
+  shell, because tmux sends SIGCONT to a pane process it sees stop, and opens a shell in a new tmux window, so
+  what you type doesn't queue up for the agent. **Hand back** sends SIGCONT and switches back to window 0. The app button
+  and `beambox takeover` both call `Core::set_takeover`.
 - **Ports** bind to 127.0.0.1 only. A busy host port moves to the next free one, and the UI shows the real one.
 
 ## Scripts
@@ -69,7 +83,7 @@ WebKitGTK etc. on Linux; WebView2 + MSVC on Windows). No environment variables a
 
 ## Command line
 
-**Connect an agent → Install the beambox command** puts `beambox` on the PATH: a two-line launcher in
+**Install the beambox command** (in the app's header) puts `beambox` on the PATH: a two-line launcher in
 `/usr/local/bin` on macOS (one admin prompt), `~/.local/bin` on Linux (the `.deb` already installs
 `/usr/bin/beambox`), and the user PATH on Windows. It's a launcher rather than a symlink because Tauri won't start
 from a symlinked executable on macOS.
@@ -77,20 +91,20 @@ from a symlinked executable on macOS.
 ```bash
 beambox list                                   # table; add --json to any command for scripts
 beambox create web -t desktop -p 3000 --mount .  # same options as the window's ▾ menu
+beambox create fixer --harness claude-code --task "fix the tests" --mount . [--desktop]
+beambox attach fixer                           # the agent's terminal (tmux); detach with Ctrl-b d
 beambox exec web -- npm test                   # exits with the command's exit code
 beambox shell web                              # interactive terminal
 beambox put web /workspace/notes.txt notes.txt # or pipe into stdin; `cat` and `ls` read back
 beambox logs web -f
 beambox stats web
 beambox start|stop|fork|snapshot|delete web
-beambox takeover web on                        # pause agent calls on web; `off` hands back
+beambox takeover fixer on                      # freeze the agent; `off` hands back
+beambox credentials set anthropic              # reads the key from stdin, hidden at a terminal
+beambox credentials list                       # names only; `remove <name>` forgets one
 beambox desktop web                            # open the window on web's Desktop tab
 beambox doctor                                 # hypervisor and bundled runtime check
-beambox mcp                                    # stdio MCP server, same as --mcp
 ```
-
-Plain calls are you. With `--agent <name>` a call counts as that agent: it shows in the activity feed and is
-refused while you have taken the sandbox over, like an MCP call. Agents can't change take-over.
 
 Windows: release builds are GUI-subsystem apps, so the CLI attaches to the terminal it was run from. `cmd.exe`
 doesn't wait for GUI-subsystem programs, so output can land after the next prompt there. Not tested on Windows yet.
@@ -99,18 +113,33 @@ doesn't wait for GUI-subsystem programs, so output can land after the next promp
 
 - **Base** is `alpine:3.22`. `images/base` is checked with `npm run check:images` (docker or podman); release CI can
   push it to GHCR and pin `TEMPLATES` (`core.rs`) to its `@sha256:` digest.
-- **Desktop** needs no registry and no Docker. The first Desktop sandbox builds it locally (`Core::desktop_snapshot`):
-  boot `alpine:3.22` as the hidden sandbox `beambox-build-desktop`, run `desktop_setup()`, stop it, save the disk
-  snapshot `beambox-build-desktop:beambox-desktop-3`, and delete the build sandbox. That takes ~10 s once. Every
-  Desktop sandbox after that boots from the snapshot in ~2 s, and the app runs `start-desktop` after each boot.
-  Bump `DESKTOP_MEMBER` when anything in `images/desktop/` or `desktop_setup()` changes.
+- **Local snapshots** need no registry and no Docker. The first sandbox of each kind builds its snapshot locally
+  (`Core::snapshot_for`): boot the base image as a hidden `beambox-build-…` sandbox, run the setup script, stop
+  it, save the disk snapshot, and delete the build sandbox. Every sandbox after that boots from the snapshot in
+  seconds. `snapshot_key` in `core.rs` names them; bump a member's suffix when its setup changes. A lock file,
+  `snapshot-build.lock` in the app data dir, makes the app and CLI processes build each snapshot once.
+
+  | Kind | Base image | Setup | Snapshot | First build |
+  | --- | --- | --- | --- | --- |
+  | Desktop (plain) | `alpine:3.22` | `desktop_setup()` | `beambox-build-desktop:beambox-desktop-3` | ~10 s |
+  | Agent | `debian:trixie-slim` | `agent_setup(h, false)` + `mcp.js` + MCP config | `beambox-build-<h>:beambox-<h>-2` | ~30 s |
+  | Agent + desktop | `debian:trixie-slim` | `agent_setup(h, true)` + the same files | `beambox-build-<h>-desktop:beambox-<h>-desktop-2` | ~2 min |
+
+  Agent snapshots get Node 24 (NodeSource), the harness from npm (`@anthropic-ai/claude-code`, `@openai/codex`,
+  `opencode-ai`; latest at build time), tmux, git, curl, `/opt/beambox/mcp.js` and the harness's MCP config
+  (`/root/.claude.json`, `/root/.codex/config.toml`, `/root/.config/opencode/opencode.json`). With a desktop they
+  also get the same desktop as below plus Google Chrome on x86-64 or Debian's Chromium on arm64. Agent
+  sandboxes default to 2 vCPUs and 2 GiB (4 GiB with a desktop). The app runs `start-desktop` after each boot.
 - **What's in it** (`images/desktop/`): TigerVNC's `Xvnc`, which is the X server and the VNC server in one. It
   resizes to the Desktop tab instead of being stretched, and sends changes as they're drawn. Also openbox with
   the dark Onyx theme, a `tint2` panel (terminal launcher and open windows) and xterm in DejaVu Sans Mono
   (`Xresources`). `theme.sh` applies the settings. `vncconfig` relays text copied in the sandbox to the host's
   clipboard. Installed size is ~382 MiB (Mesa comes in with the X server), over the spec's 120 MB target.
-- `cargo test real_desktop -- --ignored` checks this against real microVMs. It needs `MSB_PATH`,
-  `MSB_LIBKRUNFW_PATH` and `MSB_HOME` pointing at `src-tauri/binaries/` and `~/.beambox`.
+- `node scripts/cargo.mjs test real_ -- --ignored --test-threads=1` checks this against real microVMs: the Alpine desktop, a
+  Claude Code sandbox (`claude --version`, MCP config, `mcp.js` answers `initialize`, tmux session in
+  `/workspace`, no key on disk, take over and hand back) and its desktop variant (Chrome or Chromium, VNC). It
+  needs `MSB_PATH`, `MSB_LIBKRUNFW_PATH` and `MSB_HOME` pointing at `src-tauri/binaries/` and a short `MSB_HOME`
+  such as `~/.beambox`.
 
 ## Smoke test (manual, per OS)
 
@@ -121,8 +150,9 @@ Run on a fresh machine (macOS Apple Silicon, Ubuntu with KVM, Windows 11) for ev
    none shows.
 3. Click 1: **New sandbox**. The card goes from booting (pulsing amber) to running (green).
 4. Click 2: **Open**. The Terminal tab is already active and shows a `sandbox-1:/#` prompt.
-5. Pass if the prompt appears within 3 clicks. Also check: `echo hi` works, **Connect an agent → Claude Code**
-   gives a working `claude mcp add` command, and `sandbox_exec` from the agent shows in the activity feed.
+5. Pass if the prompt appears within 3 clicks. Also check: `echo hi` works; with a key under
+   **Settings → Credentials**, **▾ → Harness: Claude Code, Task: "list the files here"** opens to Claude Code
+   working in its Terminal tab, and **Take over** / **Hand back** pause and resume it.
 6. **Install the beambox command**, then in a new terminal: `beambox list`, `beambox exec sandbox-1 -- uname -a`,
    `beambox shell sandbox-1` (type `exit` to leave) and `beambox desktop <a desktop sandbox>`.
 
@@ -142,7 +172,8 @@ Things the crate doesn't make obvious. Each cost a failed run to find; check her
 - **Booting from a snapshot with labels:** `Sandbox::restore` can't set labels. Use
   `Sandbox::builder(name).override_snapshot(r)` and the builder's own `create_detached()`. Going through
   `build()` + `Sandbox::create_detached(config)` fails with "image source is required".
-- **Real-VM tests** are `#[ignore]`d. Run them with `cargo test -- --ignored`, with the three env vars set.
+- **Real-VM tests** are `#[ignore]`d. Run them with `node scripts/cargo.mjs test -- --ignored` (it builds
+  `mcp.js` first, which the Rust code embeds), with the three env vars set.
 
 ## Licences
 

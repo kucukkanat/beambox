@@ -2,7 +2,7 @@ import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App.tsx";
-import type { Activity, Api, Hypervisor, Sandbox } from "./api.ts";
+import type { Api, Hypervisor, Sandbox } from "./api.ts";
 
 // xterm and noVNC need a real canvas; their wiring is covered by the Rust tests and the manual smoke test.
 vi.mock("./Terminal.tsx", () => ({ Terminal: () => null }));
@@ -14,7 +14,7 @@ const sandbox = (over: Partial<Sandbox> = {}): Sandbox => ({
   status: "running",
   cpus: 1,
   memoryMib: 256,
-  agent: null,
+  harness: null,
   ports: [],
   ...over,
 });
@@ -35,9 +35,11 @@ function fakeApi(sandboxes: Sandbox[] = [], hypervisor: Hypervisor = { state: "o
     metrics: vi.fn(async () => ({ cpuPercent: 0, memoryBytes: 0 })),
     takeover: vi.fn(async () => false),
     setTakeover: vi.fn(async () => {}),
+    credentials: vi.fn(async () => ["openai"]),
+    setCredential: vi.fn(async () => {}),
+    removeCredential: vi.fn(async () => {}),
     hypervisor: vi.fn(async () => hypervisor),
     enableHypervisor: vi.fn(async () => {}),
-    mcpCommand: vi.fn(async () => "/Applications/Beambox.app/Contents/MacOS/beambox"),
     installCli: vi.fn(async () => "Installed. Run `beambox --help` in a terminal."),
     takeOpen: vi.fn(async () => null),
     onOpen: vi.fn(() => () => {}),
@@ -46,7 +48,6 @@ function fakeApi(sandboxes: Sandbox[] = [], hypervisor: Hypervisor = { state: "o
     terminalInput: vi.fn(async () => {}),
     terminalResize: vi.fn(async () => {}),
     terminalClose: vi.fn(async () => {}),
-    onActivity: vi.fn(() => () => {}),
   };
 }
 
@@ -81,11 +82,53 @@ describe("home", () => {
     api.create = vi.fn(() => new Promise<Sandbox>((resolve) => (finish = resolve)));
     render(<App api={api} />);
     await userEvent.click(await screen.findByRole("button", { name: "Sandbox options" }));
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Template" }), "desktop");
+    await userEvent.click(screen.getByRole("switch", { name: "Desktop" }));
     await userEvent.click(screen.getByRole("button", { name: "Create" }));
+    expect(api.create).toHaveBeenCalledWith({ desktop: true, network: "public" });
     expect(await screen.findByText(/Starting the desktop/)).toBeInTheDocument();
     await act(async () => finish(sandbox({ name: "sandbox-1", template: "desktop" })));
     expect(await screen.findByText("sandbox-1 is ready")).toBeInTheDocument();
+  });
+
+  it("creates an agent sandbox with a harness, a task and a desktop", async () => {
+    const api = fakeApi();
+    render(<App api={api} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Sandbox options" }));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Harness" }), "claude-code");
+    await userEvent.type(screen.getByRole("textbox", { name: "Task" }), "fix the tests");
+    await userEvent.click(screen.getByRole("switch", { name: "Desktop" }));
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+    expect(api.create).toHaveBeenCalledExactlyOnceWith({
+      harness: "claude-code",
+      task: "fix the tests",
+      desktop: true,
+      network: "public",
+    });
+  });
+
+  it("has no Connect an agent popover; Install the beambox command is in the header", async () => {
+    const api = fakeApi();
+    render(<App api={api} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Install the beambox command" }));
+    expect(screen.queryByRole("button", { name: "Connect an agent" })).not.toBeInTheDocument();
+    expect(api.installCli).toHaveBeenCalledOnce();
+    expect(await screen.findByText(/beambox --help/, { selector: "[data-title]" })).toBeInTheDocument();
+  });
+
+  it("stores and removes credentials under Settings, showing names only", async () => {
+    const api = fakeApi();
+    render(<App api={api} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    expect(await screen.findByText("openai: stored")).toBeInTheDocument();
+    expect(screen.getByText("anthropic: not set")).toBeInTheDocument();
+    const key = screen.getByLabelText("anthropic key or token");
+    expect(key).toHaveAttribute("type", "password");
+    await userEvent.type(key, "sk-ant-api03-x");
+    await userEvent.click(screen.getByRole("button", { name: "Save anthropic" }));
+    expect(api.setCredential).toHaveBeenCalledWith("anthropic", "sk-ant-api03-x");
+    expect(key).toHaveValue("");
+    await userEvent.click(screen.getByRole("button", { name: "Remove openai" }));
+    expect(api.removeCredential).toHaveBeenCalledWith("openai");
   });
 
   describe("delete", () => {
@@ -162,27 +205,19 @@ describe("sandbox view", () => {
     expect(screen.getByText("127.0.0.1:8081")).toBeInTheDocument();
   });
 
-  it("shows agent commands live and updates them when they finish", async () => {
-    const api = fakeApi([sandbox()]);
-    let emit = (_: Activity) => {};
-    api.onActivity = (handler) => {
-      emit = handler;
-      return () => {};
-    };
-    await open(api);
-    act(() => emit({ id: "7-1", sandbox: "a", agent: "claude-code", command: "make test", exitCode: null }));
-    expect(screen.getByText(/make test/)).toHaveTextContent("running…");
-    act(() => emit({ id: "7-1", sandbox: "a", agent: "claude-code", command: "make test", exitCode: 2 }));
-    expect(screen.getAllByText(/make test/)).toHaveLength(1);
-    expect(screen.getByText(/make test/)).toHaveTextContent("exit 2");
-  });
-
-  it("take over pauses the agent's calls", async () => {
-    const api = fakeApi([sandbox()]);
+  it("take over freezes the agent and hand back resumes it", async () => {
+    const api = fakeApi([sandbox({ harness: "claude-code" })]);
     await open(api);
     await userEvent.click(screen.getByRole("button", { name: "Take over" }));
     expect(api.setTakeover).toHaveBeenCalledWith("a", true);
-    expect(await screen.findByRole("button", { name: "Hand back" })).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: "Hand back" }));
+    expect(api.setTakeover).toHaveBeenLastCalledWith("a", false);
+  });
+
+  it("has no Take over and no activity feed for a plain sandbox", async () => {
+    await open(fakeApi([sandbox()]));
+    expect(screen.queryByRole("button", { name: "Take over" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Agent activity")).not.toBeInTheDocument();
   });
 });
 
@@ -208,15 +243,6 @@ describe("command line", () => {
     act(() => open("d"));
     expect(await screen.findByRole("heading", { name: "d" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Desktop", selected: true })).toBeInTheDocument();
-  });
-
-  it("installs the beambox command and says how to use it", async () => {
-    const api = fakeApi();
-    render(<App api={api} />);
-    await userEvent.click(await screen.findByRole("button", { name: "Connect an agent" }));
-    await userEvent.click(screen.getByRole("button", { name: "Install the beambox command" }));
-    expect(api.installCli).toHaveBeenCalledOnce();
-    expect(await screen.findByText(/beambox --help/, { selector: "[data-title]" })).toBeInTheDocument();
   });
 });
 

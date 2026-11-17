@@ -6,7 +6,7 @@ use microsandbox::{NetworkPolicy, NetworkProfile, Sandbox};
 use std::net::{IpAddr, Ipv4Addr};
 
 const TEMPLATE: &str = "beambox.template";
-const AGENT: &str = "beambox.agent";
+const HARNESS: &str = "beambox.harness";
 
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
@@ -34,7 +34,7 @@ fn info(handle: &SandboxHandle) -> Result<SandboxInfo> {
         },
         cpus: spec.resources.cpus,
         memory_mib: spec.resources.memory_mib,
-        agent: label(AGENT),
+        harness: label(HARNESS),
         ports,
     })
 }
@@ -60,8 +60,8 @@ impl SandboxBackend for MicroBackend {
             .cpus(spec.cpus)
             .memory(spec.memory_mib)
             .label(TEMPLATE, &spec.template);
-        if let Some(agent) = &spec.agent {
-            builder = builder.label(AGENT, agent);
+        if let Some(harness) = &spec.harness {
+            builder = builder.label(HARNESS, harness);
         }
         if let Some(folder) = &spec.mount {
             builder = builder.volume("/workspace", |m| m.bind(folder));
@@ -123,7 +123,12 @@ impl SandboxBackend for MicroBackend {
     }
 
     async fn exec(&self, name: &str, command: &str) -> Result<ExecResult> {
-        let out = connect(name).await?.exec("/bin/sh", ["-c", command]).await.map_err(err)?;
+        self.exec_env(name, command, &[]).await
+    }
+
+    async fn exec_env(&self, name: &str, command: &str, env: &[(String, String)]) -> Result<ExecResult> {
+        let sandbox = connect(name).await?;
+        let out = sandbox.exec_with("/bin/sh", |o| o.args(["-c", command]).envs(env.iter().cloned())).await.map_err(err)?;
         Ok(ExecResult {
             stdout: String::from_utf8_lossy(out.stdout_bytes()).into_owned(),
             stderr: String::from_utf8_lossy(out.stderr_bytes()).into_owned(),
@@ -157,29 +162,36 @@ impl SandboxBackend for MicroBackend {
 }
 
 /// Real microsandbox, not run by default. Needs MSB_PATH, MSB_LIBKRUNFW_PATH and MSB_HOME (see README):
-/// `cargo test real_desktop -- --ignored`.
+/// `cargo test real_ -- --ignored`.
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{CreateOpts, Core, DESKTOP_SNAPSHOT};
+    use crate::core::{CreateOpts, Core, snapshot_name};
+    use crate::credentials::fake::FakeSecrets;
     use std::sync::Arc;
+
+    fn core() -> Core {
+        // A made-up key: the harness starts, it just can't reach the API.
+        let secrets = Arc::new(FakeSecrets::with("anthropic", "sk-ant-api03-not-a-real-key"));
+        Core::new(Arc::new(MicroBackend), secrets, std::env::temp_dir())
+    }
 
     #[tokio::test]
     #[ignore = "boots real microVMs"]
     async fn real_desktop_boots_from_the_local_snapshot() {
-        let core = Core::new(Arc::new(MicroBackend), crate::core::temp_dir());
+        let core = core();
         let opts = |name: &str| CreateOpts { name: Some(name.into()), template: Some("desktop".into()), ..Default::default() };
         for name in ["it-desktop-1", "it-desktop-2"] {
             let _ = core.backend.delete(name).await;
-            let info = core.create(opts(name), Some("it".into())).await.unwrap();
-            assert_eq!((info.template.as_str(), info.agent.as_deref()), ("desktop", Some("it")));
+            let info = core.create(opts(name)).await.unwrap();
+            assert_eq!(info.template.as_str(), "desktop");
             let out = core.backend.exec(name, "pgrep Xvnc >/dev/null && pgrep tint2 >/dev/null && which openbox").await.unwrap();
             assert_eq!(out.exit_code, 0, "{out:?}");
         }
         // A restarted or forked desktop keeps the old X lock on disk; its desktop must still come up.
         let running = "pgrep Xvnc >/dev/null && pgrep openbox >/dev/null && netstat -ltn | grep -q ':5900 '";
         core.backend.stop("it-desktop-1").await.unwrap();
-        core.backend.start("it-desktop-1").await.unwrap();
+        core.start("it-desktop-1").await.unwrap();
         let fork = core.fork("it-desktop-2").await.unwrap();
         for name in ["it-desktop-1", fork.name.as_str()] {
             let out = core.backend.exec(name, running).await.unwrap();
@@ -187,12 +199,69 @@ mod tests {
         }
         core.backend.stop(&fork.name).await.unwrap();
         core.backend.delete(&fork.name).await.unwrap();
-        assert!(core.backend.has_snapshot(DESKTOP_SNAPSHOT).await.unwrap());
+        assert!(core.backend.has_snapshot(&snapshot_name(None, true).unwrap()).await.unwrap());
         let names: Vec<_> = core.backend.list().await.unwrap().into_iter().map(|s| s.name).collect();
         assert!(!names.iter().any(|n| n.starts_with(crate::core::BUILD_PREFIX)), "{names:?}");
         for name in ["it-desktop-1", "it-desktop-2"] {
             core.backend.stop(name).await.unwrap();
             core.backend.delete(name).await.unwrap();
         }
+    }
+
+    /// Answers `initialize` on stdin, then the pipe closes and the server exits.
+    const MCP_INITIALIZE: &str = r#"printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"it","version":"0"}}}' | timeout 10 node /opt/beambox/mcp.js"#;
+
+    async fn real_agent(name: &str, desktop: bool) {
+        let core = core();
+        let _ = core.backend.stop(name).await;
+        let _ = core.backend.delete(name).await;
+        let opts = CreateOpts {
+            name: Some(name.into()),
+            harness: Some("claude-code".into()),
+            task: Some("say hi".into()),
+            desktop: Some(desktop),
+            ..Default::default()
+        };
+        let info = core.create(opts).await.unwrap();
+        assert_eq!(info.harness.as_deref(), Some("claude-code"));
+        let check = |command: &'static str| {
+            let core = &core;
+            async move { core.backend.exec(name, command).await.unwrap() }
+        };
+        let version = check("claude --version").await;
+        assert_eq!(version.exit_code, 0, "{version:?}");
+        assert!(check("cat /root/.claude.json").await.stdout.contains("/opt/beambox/mcp.js"));
+        let mcp = check(MCP_INITIALIZE).await;
+        assert!(mcp.stdout.contains(r#""serverInfo":{"name":"beambox""#), "{mcp:?}");
+        let session = check("tmux list-sessions -F '#{session_name}' && tmux display-message -p -t agent '#{pane_current_path}'").await;
+        assert_eq!(session.stdout, "agent\n/workspace\n", "{session:?}");
+        // The key is in the harness's environment, not on disk.
+        let on_disk = check("grep -rl not-a-real-key /root /etc /opt /workspace /tmp 2>/dev/null; true").await;
+        assert_eq!(on_disk.stdout, "", "{on_disk:?}");
+        let tmux_env = check("tmux show-environment -g; tmux show-environment -t agent").await;
+        assert!(!tmux_env.stdout.contains("not-a-real-key"), "only the harness has the key");
+        core.set_takeover(name, true).await.unwrap();
+        assert!(core.is_taken_over(name).await.unwrap());
+        assert_eq!(check("tmux display-message -p -t agent '#{window_index}'").await.stdout, "1\n", "a shell for you");
+        core.set_takeover(name, false).await.unwrap();
+        assert!(!core.is_taken_over(name).await.unwrap());
+        if desktop {
+            let browser = check("(command -v google-chrome || command -v chromium) && netstat -ltn | grep -q ':5900 '").await;
+            assert_eq!(browser.exit_code, 0, "{browser:?}");
+        }
+        core.backend.stop(name).await.unwrap();
+        core.backend.delete(name).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "boots real microVMs and downloads the harness"]
+    async fn real_agent_runs_claude_code_with_the_mcp_server() {
+        real_agent("it-agent", false).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "boots real microVMs and downloads the harness and a browser"]
+    async fn real_agent_desktop_has_a_browser_and_vnc() {
+        real_agent("it-agent-desktop", true).await;
     }
 }

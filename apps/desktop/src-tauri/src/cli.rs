@@ -1,6 +1,8 @@
-//! `beambox <command>`: the command line, over the same core as the GUI and the MCP server.
+//! `beambox <command>`: the command line, over the same core as the GUI.
+use crate::agent::sh_quote;
 use crate::backend::{Result, SandboxInfo};
-use crate::core::{Core, CreateOpts, DESKTOP_SNAPSHOT};
+use crate::core::{Core, CreateOpts, snapshot_name};
+use crate::credentials;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -8,10 +10,6 @@ use std::path::{Path, PathBuf};
 #[derive(Parser, Debug)]
 #[command(name = "beambox", version, about = "microVM sandboxes for AI agents. Run with no command to open the app.")]
 pub struct Cli {
-    /// Act as this agent: the call shows in the app's activity feed and is refused while you have taken over
-    /// the sandbox.
-    #[arg(long, global = true, value_name = "NAME")]
-    pub agent: Option<String>,
     /// Print JSON instead of text.
     #[arg(long, global = true)]
     pub json: bool,
@@ -30,6 +28,15 @@ pub enum Command {
         /// `base` (Alpine, 256 MiB) or `desktop` (X desktop over VNC, 512 MiB).
         #[arg(short, long, value_parser = ["base", "desktop"])]
         template: Option<String>,
+        /// Make an agent sandbox: install this harness and start it in tmux session `agent`.
+        #[arg(long, value_parser = ["claude-code", "codex", "opencode"])]
+        harness: Option<String>,
+        /// The harness's first prompt.
+        #[arg(long, requires = "harness")]
+        task: Option<String>,
+        /// Add a desktop (Xvnc; agent sandboxes also get Chrome or Chromium).
+        #[arg(long)]
+        desktop: bool,
         /// vCPUs (default 1).
         #[arg(long)]
         cpus: Option<u8>,
@@ -65,6 +72,8 @@ pub enum Command {
     },
     /// Open an interactive shell in a sandbox.
     Shell { name: String },
+    /// Join the agent's terminal (tmux session `agent`) in an agent sandbox. Detach with Ctrl-b d.
+    Attach { name: String },
     /// List a folder in a sandbox.
     Ls {
         name: String,
@@ -84,14 +93,34 @@ pub enum Command {
     },
     /// Show CPU and memory use.
     Stats { name: String },
-    /// Show or change take-over. While it's on, agent calls on the sandbox are paused.
+    /// Show or change take-over. `on` freezes the agent so you can use the sandbox; `off` hands it back.
     Takeover { name: String, state: Option<Toggle> },
+    /// Store harness credentials in the OS keychain.
+    Credentials {
+        #[command(subcommand)]
+        action: Credentials,
+    },
     /// Open a sandbox's desktop in the Beambox app.
     Desktop { name: String },
     /// Check that this computer can run sandboxes.
     Doctor,
-    /// Serve MCP on stdio, for an agent.
-    Mcp,
+}
+
+#[derive(Subcommand, Debug, PartialEq)]
+pub enum Credentials {
+    /// Store a key or token, read from stdin (never echoed). `anthropic` takes an API key or a
+    /// `claude setup-token` token.
+    Set {
+        #[arg(value_parser = credentials::PROVIDERS.to_vec())]
+        name: String,
+    },
+    /// Names of the stored credentials.
+    List,
+    /// Forget a credential.
+    Remove {
+        #[arg(value_parser = credentials::PROVIDERS.to_vec())]
+        name: String,
+    },
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq)]
@@ -105,7 +134,6 @@ pub enum Toggle {
 pub enum Mode {
     /// The window, optionally opened on a sandbox's desktop.
     Gui(Option<String>),
-    Mcp,
     Cli,
 }
 
@@ -115,7 +143,6 @@ pub fn mode(args: &[String]) -> Mode {
         None => Mode::Gui(None),
         Some(arg) if arg.starts_with("-psn_") => Mode::Gui(None),
         Some("--open") => Mode::Gui(args.get(1).cloned()),
-        Some("--mcp") => Mode::Mcp,
         Some(_) => Mode::Cli,
     }
 }
@@ -134,12 +161,6 @@ fn io_err(e: std::io::Error) -> String {
 fn json(io: &mut Io, value: impl serde::Serialize) -> Result<()> {
     let text = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
     writeln!(io.stdout, "{text}").map_err(io_err)
-}
-
-/// Quote `arg` for `/bin/sh` when it needs it.
-fn sh_quote(arg: &str) -> String {
-    let plain = !arg.is_empty() && arg.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:,@%+".contains(c));
-    if plain { arg.into() } else { format!("'{}'", arg.replace('\'', r"'\''")) }
 }
 
 /// One argument is a shell string as typed; several are a program and its arguments, quoted as given.
@@ -166,12 +187,12 @@ fn table(sandboxes: &[SandboxInfo]) -> String {
                 format!("{:?}", s.status).to_lowercase(),
                 s.template.clone(),
                 format!("{} vCPU, {} MiB", s.cpus, s.memory_mib),
-                s.agent.clone().unwrap_or_else(|| "-".into()),
+                s.harness.clone().unwrap_or_else(|| "-".into()),
                 if ports.is_empty() { "-".into() } else { ports.join(", ") },
             ]
         })
         .collect();
-    let header = ["NAME", "STATUS", "TEMPLATE", "SIZE", "AGENT", "PORTS"].map(String::from);
+    let header = ["NAME", "STATUS", "TEMPLATE", "SIZE", "HARNESS", "PORTS"].map(String::from);
     let all: Vec<&[String; 6]> = std::iter::once(&header).chain(&rows).collect();
     let widths: Vec<usize> = (0..6).map(|i| all.iter().map(|r| r[i].chars().count()).max().unwrap_or(0)).collect();
     all.iter()
@@ -185,25 +206,16 @@ fn table(sandboxes: &[SandboxInfo]) -> String {
 fn describe(s: &SandboxInfo) -> String {
     let ports: Vec<_> = s.ports.iter().map(|p| format!("127.0.0.1:{} → {}", p.host, p.guest)).collect();
     let ports = if ports.is_empty() { String::new() } else { format!(", ports {}", ports.join(", ")) };
-    format!("{} is running ({}{ports})", s.name, s.template)
+    let kind = match &s.harness {
+        Some(h) => format!("{h}, {}", s.template),
+        None => s.template.clone(),
+    };
+    format!("{} is running ({kind}{ports})", s.name)
 }
 
-/// Run a non-interactive command and return the process exit code. `Shell`, `Desktop`, `Doctor` and `Mcp`
+/// Run a non-interactive command and return the process exit code. `Shell`, `Attach`, `Desktop` and `Doctor`
 /// need a real terminal, app or hypervisor and are handled by `main`.
 pub async fn run(cli: &Cli, core: &Core, io: &mut Io<'_>) -> Result<i32> {
-    let agent = cli.agent.as_deref();
-    // Calls on a sandbox are guarded and logged when made as an agent, like MCP calls.
-    macro_rules! call {
-        ($name:expr, $label:expr, $fut:expr) => {
-            call!($name, $label, $fut, |_| 0)
-        };
-        ($name:expr, $label:expr, $fut:expr, $exit:expr) => {
-            match agent {
-                Some(agent) => core.agent_call(agent, $name, &$label, $fut, $exit).await,
-                None => $fut.await,
-            }
-        };
-    }
     let done = |io: &mut Io, text: String| if cli.json { Ok(()) } else { writeln!(io.stdout, "{text}").map_err(io_err) };
     match &cli.command {
         Command::List => {
@@ -216,53 +228,63 @@ pub async fn run(cli: &Cli, core: &Core, io: &mut Io<'_>) -> Result<i32> {
                 write!(io.stdout, "{}", table(&all)).map_err(io_err)?
             }
         }
-        Command::Create { name, template, cpus, memory, mount, network, ports } => {
+        Command::Create { name, template, harness, task, desktop, cpus, memory, mount, network, ports } => {
             let mount = match mount {
                 Some(folder) => Some(std::path::absolute(folder).map_err(io_err)?.to_string_lossy().into_owned()),
                 None => None,
             };
-            if template.as_deref() == Some("desktop") && !core.backend.has_snapshot(DESKTOP_SNAPSHOT).await? {
-                writeln!(io.stderr, "Preparing the desktop. This takes about 10 seconds, once.").map_err(io_err)?;
+            if let Some(h) = harness {
+                core.credential_env(crate::agent::harness(h)?)?;
+            }
+            let with_desktop = *desktop || template.as_deref() == Some("desktop");
+            if let Some(snapshot) = snapshot_name(harness.as_deref(), with_desktop) {
+                if !core.backend.has_snapshot(&snapshot).await? {
+                    let (what, time) = match harness {
+                        Some(h) => (format!("the {h} sandbox"), "a few minutes"),
+                        None => ("the desktop".into(), "about 10 seconds"),
+                    };
+                    writeln!(io.stderr, "Preparing {what}. This takes {time}, once.").map_err(io_err)?;
+                }
             }
             let opts = CreateOpts {
                 name: name.clone(),
                 template: template.clone(),
+                harness: harness.clone(),
+                task: task.clone(),
+                desktop: Some(*desktop),
                 cpus: *cpus,
                 memory_mib: *memory,
                 mount,
                 network: network.clone(),
                 ports: if ports.is_empty() { None } else { Some(ports.clone()) },
             };
-            let info = core.create(opts, agent.map(String::from)).await?;
-            if let Some(agent) = agent {
-                core.record(&core.new_activity_id(), &info.name, agent, "create", Some(0));
-            }
+            let info = core.create(opts).await?;
             if cli.json { json(io, &info)? } else { done(io, describe(&info))? }
         }
         Command::Start { name } => {
-            call!(name, "start", core.backend.start(name))?;
+            core.start(name).await?;
             done(io, format!("Started {name}"))?
         }
         Command::Stop { name } => {
-            call!(name, "stop", core.backend.stop(name))?;
+            core.backend.stop(name).await?;
             done(io, format!("Stopped {name}"))?
         }
         Command::Fork { name } => {
-            let info = call!(name, "fork", core.fork(name))?;
+            let info = core.fork(name).await?;
             if cli.json { json(io, &info)? } else { done(io, describe(&info))? }
         }
         Command::Snapshot { name } => {
             let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?;
-            let snapshot = call!(name, "snapshot", core.snapshot(name, secs.as_secs()))?;
+            let snapshot = core.snapshot(name, secs.as_secs()).await?;
             if cli.json { json(io, serde_json::json!({ "snapshot": snapshot }))? } else { done(io, format!("Saved snapshot {snapshot}"))? }
         }
         Command::Delete { name } => {
-            call!(name, "delete", core.delete(name))?;
+            core.delete(name).await?;
             done(io, format!("Deleted {name}"))?
         }
         Command::Exec { name, command } => {
             let command = shell_command(command);
-            let out = call!(name, command, core.backend.exec(name, &command), |r| r.exit_code)?;
+            let out = core.backend.exec(name, &command).await?;
             if cli.json {
                 json(io, &out)?;
             } else {
@@ -272,7 +294,7 @@ pub async fn run(cli: &Cli, core: &Core, io: &mut Io<'_>) -> Result<i32> {
             return Ok(out.exit_code);
         }
         Command::Ls { name, path } => {
-            let entries = call!(name, format!("ls {path}"), core.backend.list_dir(name, path))?;
+            let entries = core.backend.list_dir(name, path).await?;
             if cli.json {
                 json(io, &entries)?
             } else {
@@ -282,7 +304,7 @@ pub async fn run(cli: &Cli, core: &Core, io: &mut Io<'_>) -> Result<i32> {
             }
         }
         Command::Cat { name, path } => {
-            let bytes = call!(name, format!("read {path}"), core.backend.read_file(name, path))?;
+            let bytes = core.backend.read_file(name, path).await?;
             io.stdout.write_all(&bytes).map_err(io_err)?
         }
         Command::Put { name, path, file } => {
@@ -295,7 +317,7 @@ pub async fn run(cli: &Cli, core: &Core, io: &mut Io<'_>) -> Result<i32> {
                 }
             };
             let size = data.len();
-            call!(name, format!("write {path}"), core.backend.write_file(name, path, data))?;
+            core.backend.write_file(name, path, data).await?;
             done(io, format!("Wrote {size} bytes to {name}:{path}"))?
         }
         Command::Logs { name, follow } => {
@@ -323,33 +345,89 @@ pub async fn run(cli: &Cli, core: &Core, io: &mut Io<'_>) -> Result<i32> {
             }
         }
         Command::Takeover { name, state } => {
-            if agent.is_some() {
-                return Err("Agents can't change take-over; only you can, from the app or without --agent.".into());
-            }
             if let Some(state) = state {
-                core.set_takeover(name, *state == Toggle::On)?;
+                core.set_takeover(name, *state == Toggle::On).await?;
             }
-            let on = core.is_taken_over(name);
+            let on = core.is_taken_over(name).await?;
             if cli.json {
                 json(io, serde_json::json!({ "takeover": on }))?
             } else {
-                let text = if on { "on: agent calls are paused" } else { "off: agents can use it" };
+                let text = if on { "on: the agent is paused" } else { "off: the agent is running" };
                 writeln!(io.stdout, "Take-over of {name} is {text}").map_err(io_err)?
             }
         }
-        Command::Shell { .. } | Command::Desktop { .. } | Command::Doctor | Command::Mcp => {
+        Command::Credentials { action } => match action {
+            Credentials::Set { name } => {
+                let mut value = String::new();
+                io.stdin.read_to_string(&mut value).map_err(io_err)?;
+                let value = value.trim();
+                if value.is_empty() {
+                    return Err(format!("no {name} credential on stdin"));
+                }
+                core.secrets.set(name, value)?;
+                done(io, format!("Stored the {name} credential in the keychain"))?
+            }
+            Credentials::List => {
+                let names = credentials::stored(core.secrets.as_ref())?;
+                if cli.json {
+                    json(io, &names)?
+                } else {
+                    for name in names {
+                        writeln!(io.stdout, "{name}").map_err(io_err)?;
+                    }
+                }
+            }
+            Credentials::Remove { name } => {
+                core.secrets.remove(name)?;
+                done(io, format!("Removed the {name} credential"))?
+            }
+        },
+        Command::Shell { .. } | Command::Attach { .. } | Command::Desktop { .. } | Command::Doctor => {
             return Err("this command needs a terminal; run it from `beambox`".into());
         }
     }
     Ok(0)
 }
 
-/// `beambox shell`: a login shell with the host terminal in raw mode, resized as the window changes.
-pub async fn shell(core: &Core, agent: Option<&str>, name: &str) -> Result<i32> {
-    match agent {
-        Some(agent) => core.agent_call(agent, name, "shell", interactive_shell(name), |code| *code).await,
-        None => interactive_shell(name).await,
+/// `beambox shell` and `beambox attach`: a program in the sandbox with the host terminal in raw mode, resized
+/// as the window changes. Attach joins the agent's tmux session.
+pub async fn shell(core: &Core, name: &str, attach: bool) -> Result<i32> {
+    let harness = match attach {
+        true => {
+            let all = core.backend.list().await?;
+            let sandbox = all.iter().find(|s| s.name == name).ok_or(format!("no sandbox named {name}"))?;
+            Some(sandbox.harness.clone().ok_or(format!("{name} has no agent. Use `beambox shell {name}`."))?)
+        }
+        false => None,
+    };
+    interactive(name, crate::agent::terminal_command(harness.as_deref())).await
+}
+
+/// Read a secret from the terminal without echoing it.
+pub fn read_hidden(prompt: &str) -> Result<String> {
+    use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, read};
+    eprint!("{prompt}");
+    crossterm::terminal::enable_raw_mode().map_err(io_err)?;
+    let _raw = RawMode;
+    let mut value = String::new();
+    loop {
+        if let Event::Key(key) = read().map_err(io_err)? {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            match key.code {
+                KeyCode::Enter => break,
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Err("cancelled".into()),
+                KeyCode::Char(c) => value.push(c),
+                KeyCode::Backspace => {
+                    value.pop();
+                }
+                _ => {}
+            }
+        }
     }
+    eprint!("\r\n");
+    Ok(value)
 }
 
 struct RawMode;
@@ -360,13 +438,13 @@ impl Drop for RawMode {
     }
 }
 
-async fn interactive_shell(name: &str) -> Result<i32> {
+async fn interactive(name: &str, program: Vec<String>) -> Result<i32> {
     use microsandbox::ExecEvent;
     use std::io::IsTerminal;
     let tty = std::io::stdin().is_terminal();
     let sandbox = crate::micro::connect(name).await?;
     let mut handle = sandbox
-        .exec_stream_with("/bin/sh", |o| o.arg("-l").tty(tty).stdin_pipe())
+        .exec_stream_with(&program[0], |o| o.args(&program[1..]).tty(tty).stdin_pipe())
         .await
         .map_err(|e| e.to_string())?;
     let stdin = handle.take_stdin().ok_or("no stdin")?;
@@ -549,10 +627,11 @@ pub fn install_cli() -> Result<String> {
 mod tests {
     use super::*;
     use crate::backend::fake::FakeBackend;
+    use crate::credentials::fake::FakeSecrets;
     use std::sync::Arc;
 
     fn core() -> Core {
-        Core::with_port_probe(Arc::new(FakeBackend::default()), crate::core::temp_dir(), |_| true)
+        Core::with_port_probe(Arc::new(FakeBackend::default()), Arc::new(FakeSecrets::default()), |_| true)
     }
 
     struct Out {
@@ -573,15 +652,25 @@ mod tests {
     }
 
     #[test]
-    fn no_arguments_open_the_window_and_mcp_keeps_its_flag() {
+    fn no_arguments_open_the_window() {
         let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(mode(&args(&[])), Mode::Gui(None));
         assert_eq!(mode(&args(&["-psn_0_12345"])), Mode::Gui(None));
         assert_eq!(mode(&args(&["--open", "a"])), Mode::Gui(Some("a".into())));
-        assert_eq!(mode(&args(&["--mcp"])), Mode::Mcp);
         assert_eq!(mode(&args(&["list"])), Mode::Cli);
-        // `--mcp` only counts as the first argument, not inside a command.
-        assert_eq!(mode(&args(&["exec", "a", "--", "grep", "--mcp"])), Mode::Cli);
+        assert_eq!(mode(&args(&["--mcp"])), Mode::Cli);
+    }
+
+    #[test]
+    fn the_host_mcp_server_and_agent_flag_are_gone() {
+        for line in ["mcp", "--mcp", "--agent claude-code list", "list --agent x"] {
+            let args = std::iter::once("beambox").chain(line.split_whitespace());
+            let err = Cli::try_parse_from(args).unwrap_err();
+            assert!(
+                matches!(err.kind(), clap::error::ErrorKind::InvalidSubcommand | clap::error::ErrorKind::UnknownArgument),
+                "{line}: {err}"
+            );
+        }
     }
 
     #[test]
@@ -590,6 +679,7 @@ mod tests {
             "list",
             "create",
             "create web -t desktop --cpus 2 --memory 1024 --mount . --network none -p 3000 -p 8080",
+            "create fixer --harness claude-code --task fix --desktop --mount .",
             "start a",
             "stop a",
             "fork a",
@@ -597,6 +687,7 @@ mod tests {
             "delete a",
             "exec a -- ls -la /",
             "shell a",
+            "attach a",
             "ls a",
             "ls a /etc",
             "cat a /etc/os-release",
@@ -606,13 +697,18 @@ mod tests {
             "takeover a on",
             "desktop a",
             "doctor",
-            "mcp",
-            "--json --agent claude-code list",
+            "credentials set anthropic",
+            "credentials list",
+            "credentials remove openai",
+            "--json list",
         ] {
             let args = std::iter::once("beambox").chain(line.split_whitespace());
             assert!(Cli::try_parse_from(args).is_ok(), "{line}");
         }
         assert!(Cli::try_parse_from(["beambox", "create", "-t", "windows"]).is_err());
+        assert!(Cli::try_parse_from(["beambox", "create", "--harness", "gemini"]).is_err());
+        assert!(Cli::try_parse_from(["beambox", "create", "--task", "x"]).is_err(), "a task needs a harness");
+        assert!(Cli::try_parse_from(["beambox", "credentials", "set", "google"]).is_err());
         assert!(Cli::try_parse_from(["beambox", "exec", "a"]).is_err());
     }
 
@@ -656,7 +752,7 @@ mod tests {
     #[tokio::test]
     async fn create_passes_every_option_and_an_absolute_mount() {
         let fake = Arc::new(FakeBackend::default());
-        let core = Core::with_port_probe(fake.clone(), crate::core::temp_dir(), |_| true);
+        let core = Core::with_port_probe(fake.clone(), Arc::new(FakeSecrets::default()), |_| true);
         let out = beambox(&core, "create big --cpus 4 --memory 2048 --network none --mount .", "").await;
         assert_eq!(out.code, Ok(0), "{}", out.stderr);
         let spec = fake.specs.lock().unwrap()[0].clone();
@@ -693,25 +789,47 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_calls_are_logged_and_paused_by_take_over() {
+    async fn credentials_set_reads_stdin_and_list_prints_names_only() {
         let core = core();
-        let mut feed = core.events.subscribe();
-        beambox(&core, "--agent claude-code create a", "").await;
-        beambox(&core, "--agent claude-code exec a echo hi", "").await;
-        let seen: Vec<_> = (0..3).map(|_| feed.try_recv().unwrap()).map(|e| (e.agent, e.command, e.exit_code)).collect();
-        let want = [("create", Some(0)), ("echo hi", None), ("echo hi", Some(0))]
-            .map(|(c, e)| ("claude-code".to_string(), c.to_string(), e));
-        assert_eq!(seen, want);
-        assert_eq!(core.backend.list().await.unwrap()[0].agent.as_deref(), Some("claude-code"));
+        let out = beambox(&core, "credentials set anthropic", "sk-ant-api03-hidden\n").await;
+        assert_eq!(out.code, Ok(0));
+        assert_eq!(out.stdout, "Stored the anthropic credential in the keychain\n");
+        assert!(!out.stdout.contains("hidden") && !out.stderr.contains("hidden"), "never echoed");
+        assert_eq!(core.secrets.get("anthropic").unwrap().as_deref(), Some("sk-ant-api03-hidden"));
+        let list = beambox(&core, "credentials list", "").await;
+        assert_eq!(list.stdout, "anthropic\n");
+        assert_eq!(beambox(&core, "--json credentials list", "").await.stdout.trim(), "[\n  \"anthropic\"\n]");
+        assert!(beambox(&core, "credentials set openai", "\n").await.code.unwrap_err().contains("no openai credential"));
+        beambox(&core, "credentials remove anthropic", "").await;
+        assert_eq!(beambox(&core, "credentials list", "").await.stdout, "");
+    }
 
-        assert_eq!(beambox(&core, "takeover a on", "").await.stdout, "Take-over of a is on: agent calls are paused\n");
-        let refused = beambox(&core, "--agent claude-code exec a echo hi", "").await;
-        assert!(refused.code.unwrap_err().contains("taken over sandbox 'a'"));
-        // You are not an agent: your own calls still work, and agents can't hand themselves control back.
-        assert_eq!(beambox(&core, "exec a echo hi", "").await.code, Ok(0));
-        assert!(beambox(&core, "--agent claude-code takeover a off", "").await.code.is_err());
-        beambox(&core, "takeover a off", "").await;
-        assert_eq!(beambox(&core, "--agent claude-code exec a echo hi", "").await.code, Ok(0));
+    #[tokio::test]
+    async fn create_with_a_harness_needs_its_credential_first() {
+        let core = core();
+        let out = beambox_args(&core, &["create", "--harness", "claude-code", "--task", "fix the tests"], "").await;
+        assert!(out.code.unwrap_err().contains("beambox credentials set anthropic"));
+        assert_eq!(out.stderr, "", "nothing is prepared");
+        beambox(&core, "credentials set anthropic", "sk-ant-api03-x").await;
+        let out = beambox_args(&core, &["create", "fixer", "--harness", "claude-code", "--task", "fix the tests"], "").await;
+        assert_eq!(out.code, Ok(0), "{}", out.stderr);
+        assert!(!out.stdout.contains("sk-ant") && !out.stderr.contains("sk-ant"), "the key is never printed");
+        assert!(out.stderr.contains("Preparing the claude-code sandbox"));
+        assert_eq!(out.stdout, "fixer is running (claude-code, base)\n");
+        assert!(beambox(&core, "list", "").await.stdout.lines().nth(1).unwrap().contains("claude-code"));
+    }
+
+    #[tokio::test]
+    async fn takeover_freezes_and_hands_back_the_agent() {
+        let fake = Arc::new(FakeBackend::default());
+        let core = Core::with_port_probe(fake.clone(), Arc::new(FakeSecrets::with("openai", "sk-x")), |_| true);
+        beambox(&core, "create a --harness codex", "").await;
+        assert_eq!(beambox(&core, "takeover a on", "").await.code, Ok(0));
+        let last = fake.execs.lock().unwrap().iter().rev().nth(1).unwrap().1.clone();
+        assert_eq!(last, crate::core::takeover_command(true));
+        let out = beambox(&core, "takeover a off", "").await;
+        assert_eq!(out.stdout, "Take-over of a is off: the agent is running\n");
+        assert!(fake.execs.lock().unwrap().iter().any(|(_, c)| c == &crate::core::takeover_command(false)));
     }
 
     #[tokio::test]

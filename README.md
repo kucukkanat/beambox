@@ -27,7 +27,8 @@ specs/       feature specs for large features: the backlog.
 
 | Workspace | Path | Description |
 | --- | --- | --- |
-| `@repo/desktop` | [apps/desktop](apps/desktop) | Beambox: Tauri 2 desktop app + `--mcp` server for AI-agent microVM sandboxes (microsandbox) |
+| `@repo/desktop` | [apps/desktop](apps/desktop) | Beambox: Tauri 2 desktop app + `beambox` CLI that give each AI agent its own microVM sandbox (microsandbox) |
+| `@repo/sandbox-mcp` | [apps/sandbox-mcp](apps/sandbox-mcp) | Beambox's MCP server that runs inside each agent sandbox (bundled into `mcp.js`) |
 
 ## Common commands
 

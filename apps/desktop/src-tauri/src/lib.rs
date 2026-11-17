@@ -1,20 +1,19 @@
+pub mod agent;
 pub mod backend;
 pub mod cli;
 pub mod core;
+pub mod credentials;
 pub mod hypervisor;
-pub mod mcp;
 pub mod micro;
 pub mod paths;
 pub mod ports;
 pub mod proxy;
 
 use crate::backend::{DirEntry, Metrics, Result, SandboxInfo};
-use crate::core::{Activity, Core, CreateOpts};
+use crate::core::{Core, CreateOpts};
 use microsandbox::sandbox::exec::{ExecControl, ExecSink};
 use microsandbox::ExecEvent;
 use std::collections::HashMap;
-use std::io::{BufRead, Seek, Write};
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::ipc::Channel;
 use tauri::{Emitter, Manager, State};
@@ -44,40 +43,8 @@ fn setup(context: &tauri::Context) -> (Arc<Core>, paths::RuntimePaths) {
     let home_dir = dirs::home_dir().expect("no home dir");
     let paths = paths::resolve(std::env::consts::OS, exe.parent().expect("exe dir"), &resource_dir, &data_dir, &home_dir);
     paths.apply();
-    (Arc::new(Core::new(Arc::new(micro::MicroBackend), data_dir)), paths)
-}
-
-/// Append one activity event to the file the GUI tails. One write per line, so lines from concurrent
-/// processes never interleave.
-fn append_activity(file: &std::path::Path, event: &Activity) {
-    let line = serde_json::to_string(event).expect("serializable");
-    let appended = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(file)
-        .and_then(|mut f| f.write_all(format!("{line}\n").as_bytes()));
-    if let Err(e) = appended {
-        eprintln!("beambox: cannot write activity: {e}");
-    }
-}
-
-/// `beambox --mcp` / `beambox mcp`: serve MCP on stdio. Activity goes to a JSONL file the GUI tails.
-pub fn run_mcp() {
-    let (core, _) = setup(&context());
-    tokio::runtime::Runtime::new().expect("tokio").block_on(serve_mcp(core));
-}
-
-async fn serve_mcp(core: Arc<Core>) {
-    let file = core.activity_file();
-    let mut events = core.events.subscribe();
-    tokio::spawn(async move {
-        while let Ok(event) = events.recv().await {
-            append_activity(&file, &event);
-        }
-    });
-    use rmcp::ServiceExt;
-    let server = mcp::McpServer::new(core).serve(rmcp::transport::stdio()).await.expect("mcp handshake");
-    let _ = server.waiting().await;
+    std::fs::create_dir_all(&data_dir).expect("can't create the app data dir");
+    (Arc::new(Core::new(Arc::new(micro::MicroBackend), Arc::new(credentials::Keychain), data_dir)), paths)
 }
 
 /// `beambox <command>`: run one CLI command and return the exit code.
@@ -91,47 +58,32 @@ pub fn run_cli() -> i32 {
     let cli = cli::Cli::parse();
     let (core, paths) = setup(&context());
     let runtime = tokio::runtime::Runtime::new().expect("tokio");
-    if cli.command == cli::Command::Mcp {
-        runtime.block_on(serve_mcp(core));
-        return 0;
-    }
-    let mut events = core.events.subscribe();
-    let (mut stdin, mut stdout, mut stderr) = (std::io::stdin(), std::io::stdout(), std::io::stderr());
-    let mut io = cli::Io { stdin: &mut stdin, stdout: &mut stdout, stderr: &mut stderr };
+    let (mut stdout, mut stderr) = (std::io::stdout(), std::io::stderr());
     let result = runtime.block_on(async {
+        // `credentials set` typed at a terminal reads the secret without echoing it.
+        let typed = match &cli.command {
+            cli::Command::Credentials { action: cli::Credentials::Set { name } } if std::io::IsTerminal::is_terminal(&std::io::stdin()) => {
+                Some(cli::read_hidden(&format!("Paste the {name} key or token (hidden), then press Enter: "))?)
+            }
+            _ => None,
+        };
+        let mut stdin: Box<dyn std::io::Read> = match &typed {
+            Some(text) => Box::new(std::io::Cursor::new(text.clone().into_bytes())),
+            None => Box::new(std::io::stdin()),
+        };
+        let mut io = cli::Io { stdin: &mut stdin, stdout: &mut stdout, stderr: &mut stderr };
         match &cli.command {
-            cli::Command::Shell { name } => cli::shell(&core, cli.agent.as_deref(), name).await,
+            cli::Command::Shell { name } => cli::shell(&core, name, false).await,
+            cli::Command::Attach { name } => cli::shell(&core, name, true).await,
             cli::Command::Desktop { name } => cli::desktop(&core, name, &mut io).await,
             cli::Command::Doctor => cli::doctor(&paths, &mut io),
             _ => cli::run(&cli, &core, &mut io).await,
         }
     });
-    while let Ok(event) = events.try_recv() {
-        append_activity(&core.activity_file(), &event);
-    }
     result.unwrap_or_else(|e| {
         eprintln!("beambox: {e}");
         1
     })
-}
-
-/// Emit every new line of the activity file as an `activity` event, starting from its current end.
-fn tail_activity(app: tauri::AppHandle, file: PathBuf) {
-    std::thread::spawn(move || {
-        let mut offset = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
-        loop {
-            if let Ok(mut f) = std::fs::File::open(&file) {
-                let _ = f.seek(std::io::SeekFrom::Start(offset));
-                for line in std::io::BufReader::new(f).lines().map_while(std::io::Result::ok) {
-                    offset += line.len() as u64 + 1;
-                    if let Ok(event) = serde_json::from_str::<Activity>(&line) {
-                        let _ = app.emit("activity", event);
-                    }
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_millis(300));
-        }
-    });
 }
 
 #[tauri::command]
@@ -141,12 +93,12 @@ async fn list(app: State<'_, App>) -> Result<Vec<SandboxInfo>> {
 
 #[tauri::command]
 async fn create(app: State<'_, App>, opts: CreateOpts) -> Result<SandboxInfo> {
-    app.core.create(opts, None).await
+    app.core.create(opts).await
 }
 
 #[tauri::command]
 async fn start(app: State<'_, App>, name: String) -> Result<()> {
-    app.core.backend.start(&name).await
+    app.core.start(&name).await
 }
 
 #[tauri::command]
@@ -205,13 +157,32 @@ async fn metrics(app: State<'_, App>, name: String) -> Result<Metrics> {
 }
 
 #[tauri::command]
-fn set_takeover(app: State<'_, App>, name: String, on: bool) -> Result<()> {
-    app.core.set_takeover(&name, on)
+async fn set_takeover(app: State<'_, App>, name: String, on: bool) -> Result<()> {
+    app.core.set_takeover(&name, on).await
 }
 
 #[tauri::command]
-fn takeover(app: State<'_, App>, name: String) -> bool {
-    app.core.is_taken_over(&name)
+async fn takeover(app: State<'_, App>, name: String) -> Result<bool> {
+    app.core.is_taken_over(&name).await
+}
+
+#[tauri::command]
+fn credentials_list(app: State<'_, App>) -> Result<Vec<String>> {
+    credentials::stored(app.core.secrets.as_ref())
+}
+
+#[tauri::command]
+fn credentials_set(app: State<'_, App>, name: String, value: String) -> Result<()> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("Paste a key or token first".into());
+    }
+    app.core.secrets.set(&name, value)
+}
+
+#[tauri::command]
+fn credentials_remove(app: State<'_, App>, name: String) -> Result<()> {
+    app.core.secrets.remove(&name)
 }
 
 #[derive(serde::Serialize)]
@@ -236,12 +207,6 @@ async fn enable_hypervisor() -> Result<()> {
         .status()
         .map_err(|e| e.to_string())?;
     if status.success() { Ok(()) } else { Err("Enabling Windows Hypervisor Platform was cancelled or failed".into()) }
-}
-
-/// The command an agent runs to reach this app over MCP.
-#[tauri::command]
-fn mcp_command() -> Result<String> {
-    cli::app_executable().map(|p| p.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -275,9 +240,12 @@ async fn desktop_port(app: State<'_, App>, name: String) -> Result<u16> {
 
 #[tauri::command]
 async fn terminal_open(app: State<'_, App>, name: String, output: Channel<Vec<u8>>) -> Result<u64> {
+    // Agent sandboxes show the agent's own terminal.
+    let harness = app.core.backend.list().await?.into_iter().find(|s| s.name == name).and_then(|s| s.harness);
+    let program = agent::terminal_command(harness.as_deref());
     let sandbox = micro::connect(&name).await?;
     let mut handle = sandbox
-        .exec_stream_with("/bin/sh", |o| o.arg("-l").tty(true).stdin_pipe())
+        .exec_stream_with(&program[0], |o| o.args(&program[1..]).tty(true).stdin_pipe())
         .await
         .map_err(|e| e.to_string())?;
     let stdin = handle.take_stdin().ok_or("no stdin")?;
@@ -330,7 +298,6 @@ async fn terminal_close(app: State<'_, App>, id: u64) -> Result<()> {
 pub fn run(open: Option<String>) {
     let context = context();
     let (core, _) = setup(&context);
-    let activity = core.activity_file();
     tauri::Builder::default()
         // First: a second launch (`beambox desktop`, a Dock click) focuses this window instead of opening another.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
@@ -348,10 +315,6 @@ pub fn run(open: Option<String>) {
             desktop_proxies: Default::default(),
             open_at_launch: Mutex::new(open),
         })
-        .setup(move |app| {
-            tail_activity(app.handle().clone(), activity);
-            Ok(())
-        })
         .invoke_handler(tauri::generate_handler![
             list,
             create,
@@ -367,9 +330,11 @@ pub fn run(open: Option<String>) {
             metrics,
             set_takeover,
             takeover,
+            credentials_list,
+            credentials_set,
+            credentials_remove,
             hypervisor_status,
             enable_hypervisor,
-            mcp_command,
             install_cli,
             take_open,
             desktop_port,
