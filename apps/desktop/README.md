@@ -101,7 +101,7 @@ doesn't wait for GUI-subsystem programs, so output can land after the next promp
   push it to GHCR and pin `TEMPLATES` (`core.rs`) to its `@sha256:` digest.
 - **Desktop** needs no registry and no Docker. The first Desktop sandbox builds it locally (`Core::desktop_snapshot`):
   boot `alpine:3.22` as the hidden sandbox `beambox-build-desktop`, run `desktop_setup()` (apk add xvfb, x11vnc,
-  openbox, xterm, fonts, plus `start-desktop`), stop it, save the disk snapshot `beambox-build-desktop:beambox-desktop-1`,
+  openbox, xterm, xsetroot, fonts, plus `start-desktop`), stop it, save the disk snapshot `beambox-build-desktop:beambox-desktop-2`,
   and delete the build sandbox. That takes ~10 s once. Every Desktop sandbox after that boots from the snapshot in
   ~1 s, and the app runs `start-desktop` after each boot. Bump `DESKTOP_MEMBER` when `desktop_setup()` changes.
   Installed size is ~327 MiB (Mesa comes in with Xvfb), over the spec's 120 MB target.

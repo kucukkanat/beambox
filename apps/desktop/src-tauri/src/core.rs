@@ -19,15 +19,15 @@ pub const VNC_PORT: u16 = 5900;
 pub const BUILD_PREFIX: &str = "beambox-build-";
 const DESKTOP_BUILDER: &str = "beambox-build-desktop";
 /// Bump the suffix whenever `desktop_setup()` changes, so existing installs build the new desktop.
-const DESKTOP_MEMBER: &str = "beambox-desktop-1";
+const DESKTOP_MEMBER: &str = "beambox-desktop-2";
 /// microsandbox names snapshots `<group>:<member>`, and the group is the source sandbox's name.
-pub const DESKTOP_SNAPSHOT: &str = "beambox-build-desktop:beambox-desktop-1";
+pub const DESKTOP_SNAPSHOT: &str = "beambox-build-desktop:beambox-desktop-2";
 
 /// Shell script that turns plain Alpine into the desktop template.
 pub fn desktop_setup() -> String {
     let start = include_str!("../../images/desktop/start-desktop");
     format!(
-        "set -e\napk add --no-cache xvfb x11vnc openbox xterm font-dejavu\n\
+        "set -e\napk add --no-cache xvfb x11vnc openbox xterm xsetroot font-dejavu\n\
          cat > /usr/local/bin/start-desktop <<'EOF'\n{start}EOF\nchmod +x /usr/local/bin/start-desktop\n"
     )
 }

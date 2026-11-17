@@ -104,7 +104,10 @@ impl SandboxBackend for MicroBackend {
             fork = fork.port_bind(IpAddr::V4(Ipv4Addr::LOCALHOST), port.host, port.guest);
         }
         fork.fork().await.map_err(err)?;
-        info(&Sandbox::get(child).await.map_err(err)?)
+        let info = info(&Sandbox::get(child).await.map_err(err)?)?;
+        // The child boots fresh, so its desktop must be started like after any boot.
+        after_boot(&connect(child).await?, &info.template).await?;
+        Ok(info)
     }
 
     async fn snapshot(&self, name: &str, snapshot: &str) -> Result<()> {
@@ -173,6 +176,17 @@ mod tests {
             let out = core.backend.exec(name, "sleep 1; pgrep x11vnc >/dev/null && which Xvfb openbox").await.unwrap();
             assert_eq!(out.exit_code, 0, "{out:?}");
         }
+        // A restarted or forked desktop keeps the old X lock on disk; its desktop must still come up.
+        let running = "pgrep Xvfb >/dev/null && pgrep openbox >/dev/null && netstat -ltn | grep -q ':5900 '";
+        core.backend.stop("it-desktop-1").await.unwrap();
+        core.backend.start("it-desktop-1").await.unwrap();
+        let fork = core.fork("it-desktop-2").await.unwrap();
+        for name in ["it-desktop-1", fork.name.as_str()] {
+            let out = core.backend.exec(name, running).await.unwrap();
+            assert_eq!(out.exit_code, 0, "{name}: {out:?}");
+        }
+        core.backend.stop(&fork.name).await.unwrap();
+        core.backend.delete(&fork.name).await.unwrap();
         assert!(core.backend.has_snapshot(DESKTOP_SNAPSHOT).await.unwrap());
         let names: Vec<_> = core.backend.list().await.unwrap().into_iter().map(|s| s.name).collect();
         assert!(!names.iter().any(|n| n.starts_with(crate::core::BUILD_PREFIX)), "{names:?}");

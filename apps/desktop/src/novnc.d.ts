@@ -4,5 +4,6 @@ declare module "@novnc/novnc" {
     scaleViewport: boolean;
     resizeSession: boolean;
     disconnect(): void;
+    addEventListener(type: "connect" | "disconnect", listener: () => void): void;
   }
 }

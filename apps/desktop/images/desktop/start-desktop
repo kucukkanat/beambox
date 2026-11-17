@@ -2,8 +2,25 @@
 # Beambox runs this after every boot. Starts the X desktop in the background and returns.
 export DISPLAY=:0
 pgrep Xvfb >/dev/null && exit 0
-setsid Xvfb :0 -screen 0 1280x800x24 -nolisten tcp >/tmp/xvfb.log 2>&1 &
-sleep 1
+# /tmp is on the sandbox's disk, so a stopped or forked sandbox keeps the old server's lock and socket, and Xvfb
+# would refuse to start ("Server is already active for display 0").
+rm -f /tmp/.X0-lock /tmp/.X11-unix/X0
+# -noreset: by default X resets, wiping the background, whenever its last client disconnects.
+setsid Xvfb :0 -screen 0 1280x800x24 -nolisten tcp -noreset >/tmp/xvfb.log 2>&1 &
+# A bare X server is all black: set a background, which also waits (up to 5 s) until X accepts clients.
+i=0
+until xsetroot -solid '#1e2a38' 2>/dev/null || [ "$i" -ge 50 ]; do
+  i=$((i + 1))
+  sleep 0.1
+done
 setsid openbox >/tmp/openbox.log 2>&1 &
+# A terminal, so the desktop is visibly alive and usable.
+setsid xterm -geometry 100x30+60+60 >/dev/null 2>&1 &
 # No VNC password: the port is only published on the host's 127.0.0.1.
 setsid x11vnc -display :0 -rfbport 5900 -forever -shared -nopw -quiet >/tmp/x11vnc.log 2>&1 &
+# Return once VNC is listening (up to 5 s), so the Desktop tab can connect as soon as the sandbox is ready.
+i=0
+until netstat -ltn | grep -q ':5900 ' || [ "$i" -ge 50 ]; do
+  i=$((i + 1))
+  sleep 0.1
+done
