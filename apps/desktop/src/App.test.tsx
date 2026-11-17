@@ -72,6 +72,19 @@ describe("home", () => {
     expect(api.create).toHaveBeenCalledWith({});
   });
 
+  it("says a Desktop sandbox is starting until it is ready", async () => {
+    const api = fakeApi();
+    let finish = (_: Sandbox) => {};
+    api.create = vi.fn(() => new Promise<Sandbox>((resolve) => (finish = resolve)));
+    render(<App api={api} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Sandbox options" }));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Template" }), "desktop");
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+    expect(await screen.findByText(/Starting the desktop/)).toBeInTheDocument();
+    await act(async () => finish(sandbox({ name: "sandbox-1", template: "desktop" })));
+    expect(await screen.findByText("sandbox-1 is ready")).toBeInTheDocument();
+  });
+
   describe("delete", () => {
     // Reduced motion: cards leave at once instead of after an exit animation jsdom can't run.
     beforeEach(() => {

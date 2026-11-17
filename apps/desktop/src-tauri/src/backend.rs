@@ -33,6 +33,8 @@ pub struct Spec {
     pub network: String,
     pub ports: Vec<Port>,
     pub agent: Option<String>,
+    /// Boot from this local disk snapshot instead of `image`.
+    pub snapshot: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -78,6 +80,7 @@ pub trait SandboxBackend: Send + Sync {
     /// Fork a running sandbox into `child`, which publishes its guest ports on the given host `ports`.
     async fn fork(&self, name: &str, child: &str, ports: &[Port]) -> Result<SandboxInfo>;
     async fn snapshot(&self, name: &str, snapshot: &str) -> Result<()>;
+    async fn has_snapshot(&self, snapshot: &str) -> Result<bool>;
     async fn delete(&self, name: &str) -> Result<()>;
     /// Run `command` through `/bin/sh -c`.
     async fn exec(&self, name: &str, command: &str) -> Result<ExecResult>;
@@ -92,7 +95,7 @@ pub trait SandboxBackend: Send + Sync {
 #[cfg(test)]
 pub mod fake {
     use super::*;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -100,6 +103,9 @@ pub mod fake {
         pub sandboxes: Mutex<BTreeMap<String, SandboxInfo>>,
         pub specs: Mutex<Vec<Spec>>,
         pub files: Mutex<BTreeMap<(String, String), Vec<u8>>>,
+        pub snapshots: Mutex<BTreeSet<String>>,
+        /// Every `(sandbox, command)` passed to `exec`.
+        pub execs: Mutex<Vec<(String, String)>>,
     }
 
     impl FakeBackend {
@@ -112,6 +118,11 @@ pub mod fake {
     #[async_trait]
     impl SandboxBackend for FakeBackend {
         async fn create(&self, spec: Spec) -> Result<SandboxInfo> {
+            if let Some(snapshot) = &spec.snapshot {
+                if !self.snapshots.lock().unwrap().contains(snapshot) {
+                    return Err(format!("snapshot not found: {snapshot}"));
+                }
+            }
             let info = SandboxInfo {
                 name: spec.name.clone(),
                 template: spec.template.clone(),
@@ -141,14 +152,21 @@ pub mod fake {
             self.sandboxes.lock().unwrap().insert(child.to_string(), copy.clone());
             Ok(copy)
         }
-        async fn snapshot(&self, name: &str, _snapshot: &str) -> Result<()> {
-            self.with(name, |_| ())
+        async fn snapshot(&self, name: &str, snapshot: &str) -> Result<()> {
+            self.with(name, |_| ())?;
+            // Like microsandbox: `<group>:<member>`, the group being the source sandbox.
+            self.snapshots.lock().unwrap().insert(format!("{name}:{snapshot}"));
+            Ok(())
+        }
+        async fn has_snapshot(&self, snapshot: &str) -> Result<bool> {
+            Ok(self.snapshots.lock().unwrap().contains(snapshot))
         }
         async fn delete(&self, name: &str) -> Result<()> {
             self.sandboxes.lock().unwrap().remove(name).map(|_| ()).ok_or_else(|| format!("no sandbox named {name}"))
         }
         async fn exec(&self, name: &str, command: &str) -> Result<ExecResult> {
             self.with(name, |_| ())?;
+            self.execs.lock().unwrap().push((name.to_string(), command.to_string()));
             // `echo out; echo err >&2; exit 3` style commands, enough to prove the plumbing.
             let mut result = ExecResult { stdout: String::new(), stderr: String::new(), exit_code: 0 };
             for part in command.split(';').map(str::trim) {

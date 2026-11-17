@@ -24,7 +24,8 @@ can watch them and step in through a GUI. One download, nothing else to install.
 | `src-tauri/src/mcp.rs` | The `--mcp` server (rmcp) |
 | `src-tauri/src/proxy.rs` | TCP→WebSocket proxy for noVNC (replaces websockify) |
 | `src-tauri/src/paths.rs`, `hypervisor.rs`, `ports.rs` | Bundled runtime paths, hypervisor check, port picking |
-| `images/*/Dockerfile` | Template images (`base` ≤ 10 MB, `desktop` ≤ 120 MB unpacked) |
+| `images/base/Dockerfile` | Base template image (≤ 10 MB unpacked) |
+| `images/desktop/start-desktop` | Starts Xvfb, openbox and x11vnc in a Desktop sandbox; installed by `desktop_setup()` in `core.rs` |
 | `scripts/` | `fetch-runtime.mjs`, `check-image-size.mjs`, `cargo.mjs` (runs cargo even if `~/.cargo/bin` isn't on PATH) |
 
 ## How it fits together
@@ -55,12 +56,18 @@ Prerequisites for building: Node 24+, Rust (rustup, stable) and
 [Tauri's system dependencies](https://tauri.app/start/prerequisites/) (Xcode Command Line Tools on macOS;
 WebKitGTK etc. on Linux; WebView2 + MSVC on Windows). No environment variables are needed.
 
-## Template images (CI)
+## Templates
 
-`images/base` and `images/desktop` are built and checked with `npm run check:images` (docker or podman), then
-pushed to GHCR. Release CI should point `TEMPLATES` (`core.rs`) at the `@sha256:` digests. `base` is currently
-`alpine:3.22`, which is the same image. `desktop` is a `ghcr.io/beambox/desktop:0.1` placeholder until it is
-published, so the Desktop template doesn't work before then.
+- **Base** is `alpine:3.22`. `images/base` is checked with `npm run check:images` (docker or podman); release CI can
+  push it to GHCR and pin `TEMPLATES` (`core.rs`) to its `@sha256:` digest.
+- **Desktop** needs no registry and no Docker. The first Desktop sandbox builds it locally (`Core::desktop_snapshot`):
+  boot `alpine:3.22` as the hidden sandbox `beambox-build-desktop`, run `desktop_setup()` (apk add xvfb, x11vnc,
+  openbox, xterm, fonts, plus `start-desktop`), stop it, save the disk snapshot `beambox-build-desktop:beambox-desktop-1`,
+  and delete the build sandbox. That takes ~10 s once. Every Desktop sandbox after that boots from the snapshot in
+  ~1 s, and the app runs `start-desktop` after each boot. Bump `DESKTOP_MEMBER` when `desktop_setup()` changes.
+  Installed size is ~327 MiB (Mesa comes in with Xvfb), over the spec's 120 MB target.
+- `cargo test real_desktop -- --ignored` checks this against real microVMs. It needs `MSB_PATH`,
+  `MSB_LIBKRUNFW_PATH` and `MSB_HOME` pointing at `src-tauri/binaries/` and `~/.beambox`.
 
 ## Smoke test (manual, per OS)
 

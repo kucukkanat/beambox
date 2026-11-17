@@ -52,7 +52,17 @@ export function App({ api }: { api: Api }) {
   const undelete = (name: string) => setDeleting((all) => all.filter((n) => n !== name));
 
   const actions: Actions = {
-    create: (opts) => run(api.create(opts)),
+    create: (opts) => {
+      const call = api.create(opts);
+      // The first Desktop sandbox builds the desktop snapshot (~10 s); later ones boot from it in ~1 s.
+      if (opts.template === "desktop")
+        toast.promise(call, {
+          loading: "Starting the desktop… the first one takes about 10 seconds",
+          success: (s) => `${s.name} is ready`,
+          error: () => "Couldn't start the desktop",
+        });
+      run(call);
+    },
     start: (name) => {
       setStatus(name, "booting");
       run(api.start(name));

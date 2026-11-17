@@ -6,14 +6,31 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
-/// Template images. Release CI pins these to GHCR digests (see README "Template images").
+/// Template images.
 pub const TEMPLATES: &[(&str, &str, u32, &[u16])] = &[
     // (name, image, default memory MiB, guest ports published by default)
-    // `images/base` is plain Alpine, so this is the same image until the GHCR one is published.
     ("base", "alpine:3.22", 256, &[]),
-    ("desktop", "ghcr.io/beambox/desktop:0.1", 512, &[VNC_PORT]),
+    // Built locally into DESKTOP_SNAPSHOT from this image the first time it is used; see `desktop_snapshot`.
+    ("desktop", "alpine:3.22", 512, &[VNC_PORT]),
 ];
 pub const VNC_PORT: u16 = 5900;
+
+/// Sandboxes with this name prefix are Beambox's own build machines, hidden from the GUI and agents.
+pub const BUILD_PREFIX: &str = "beambox-build-";
+const DESKTOP_BUILDER: &str = "beambox-build-desktop";
+/// Bump the suffix whenever `desktop_setup()` changes, so existing installs build the new desktop.
+const DESKTOP_MEMBER: &str = "beambox-desktop-1";
+/// microsandbox names snapshots `<group>:<member>`, and the group is the source sandbox's name.
+pub const DESKTOP_SNAPSHOT: &str = "beambox-build-desktop:beambox-desktop-1";
+
+/// Shell script that turns plain Alpine into the desktop template.
+pub fn desktop_setup() -> String {
+    let start = include_str!("../../images/desktop/start-desktop");
+    format!(
+        "set -e\napk add --no-cache xvfb x11vnc openbox xterm font-dejavu\n\
+         cat > /usr/local/bin/start-desktop <<'EOF'\n{start}EOF\nchmod +x /usr/local/bin/start-desktop\n"
+    )
+}
 
 /// Optional settings for a new sandbox. Everything left out gets the one-click default.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, schemars::JsonSchema)]
@@ -52,6 +69,8 @@ pub struct Core {
     data_dir: PathBuf,
     is_port_free: fn(u16) -> bool,
     seq: std::sync::atomic::AtomicU64,
+    /// Serialises desktop snapshot builds, so concurrent creates build it once.
+    preparing: tokio::sync::Mutex<()>,
 }
 
 impl Core {
@@ -60,7 +79,7 @@ impl Core {
     }
 
     pub fn with_port_probe(backend: Arc<dyn SandboxBackend>, data_dir: PathBuf, probe: fn(u16) -> bool) -> Self {
-        Self { backend, events: broadcast::channel(1024).0, data_dir, is_port_free: probe, seq: 0.into() }
+        Self { backend, events: broadcast::channel(1024).0, data_dir, is_port_free: probe, seq: 0.into(), preparing: Default::default() }
     }
 
     pub async fn create(&self, opts: CreateOpts, agent: Option<String>) -> Result<SandboxInfo> {
@@ -82,8 +101,46 @@ impl Core {
             network: opts.network.unwrap_or_else(|| "public".into()),
             ports,
             agent,
+            snapshot: None,
         };
+        let spec = if spec.template == "desktop" { Spec { snapshot: Some(self.desktop_snapshot().await?), ..spec } } else { spec };
         self.backend.create(spec).await
+    }
+
+    /// The desktop disk snapshot, built on first use: boot plain Alpine, install the desktop, stop, snapshot,
+    /// delete the build sandbox. Takes ~10 s once; every Desktop sandbox after that boots from it in ~1 s.
+    pub async fn desktop_snapshot(&self) -> Result<String> {
+        let _one_at_a_time = self.preparing.lock().await;
+        if self.backend.has_snapshot(DESKTOP_SNAPSHOT).await? {
+            return Ok(DESKTOP_SNAPSHOT.into());
+        }
+        let name = DESKTOP_BUILDER.to_string();
+        // A build interrupted by quitting the app leaves its sandbox behind.
+        let _ = self.backend.delete(&name).await;
+        let spec = Spec {
+            name: name.clone(),
+            template: "build".into(),
+            image: "alpine:3.22".into(),
+            cpus: 1,
+            memory_mib: 512,
+            mount: None,
+            network: "public".into(),
+            ports: vec![],
+            agent: None,
+            snapshot: None,
+        };
+        self.backend.create(spec).await?;
+        let built = async {
+            let out = self.backend.exec(&name, &desktop_setup()).await?;
+            if out.exit_code != 0 {
+                return Err(format!("preparing the desktop failed: {}", out.stderr.trim()));
+            }
+            self.backend.stop(&name).await?;
+            self.backend.snapshot(&name, DESKTOP_MEMBER).await
+        }
+        .await;
+        let _ = self.backend.delete(&name).await;
+        built.map(|_| DESKTOP_SNAPSHOT.into())
     }
 
     /// Fork into `<name>-fork-<n>`; the child gets its own free host ports for the same guest ports.
@@ -230,6 +287,47 @@ mod tests {
         let info = core.create(CreateOpts { template: Some("desktop".into()), ..Default::default() }, None).await.unwrap();
         assert_eq!(info.memory_mib, 512);
         assert_eq!(info.ports, [Port { guest: VNC_PORT, host: VNC_PORT }]);
+    }
+
+    #[tokio::test]
+    async fn desktop_snapshot_is_built_once_then_reused() {
+        let (fake, core) = core_with(|_| true);
+        let desktop = || CreateOpts { template: Some("desktop".into()), ..Default::default() };
+        core.create(desktop(), None).await.unwrap();
+        core.create(desktop(), Some("cursor".into())).await.unwrap();
+
+        let builds: Vec<_> = fake.execs.lock().unwrap().iter().filter(|(_, c)| c.contains("apk add")).cloned().collect();
+        assert_eq!(builds.len(), 1, "setup runs once");
+        assert_eq!(builds[0].0, DESKTOP_BUILDER);
+        let specs = fake.specs.lock().unwrap().clone();
+        let users: Vec<_> = specs.iter().filter(|s| s.template == "desktop").collect();
+        assert!(users.iter().all(|s| s.snapshot.as_deref() == Some(DESKTOP_SNAPSHOT)), "{users:?}");
+        assert_eq!(users[1].agent.as_deref(), Some("cursor"));
+        let names: Vec<_> = core.backend.list().await.unwrap().into_iter().map(|s| s.name).collect();
+        assert_eq!(names, ["sandbox-1", "sandbox-2"], "build sandbox is deleted");
+    }
+
+    #[tokio::test]
+    async fn base_template_never_builds_a_snapshot() {
+        let (fake, core) = core_with(|_| true);
+        core.create(CreateOpts::default(), None).await.unwrap();
+        assert!(fake.execs.lock().unwrap().is_empty());
+        assert_eq!(fake.specs.lock().unwrap()[0].snapshot, None);
+    }
+
+    #[test]
+    fn desktop_snapshot_reference_matches_its_builder() {
+        assert_eq!(DESKTOP_SNAPSHOT, format!("{DESKTOP_BUILDER}:{DESKTOP_MEMBER}"));
+        assert!(DESKTOP_BUILDER.starts_with(BUILD_PREFIX));
+    }
+
+    #[test]
+    fn desktop_setup_installs_the_start_script() {
+        let script = desktop_setup();
+        assert!(script.starts_with("set -e\napk add --no-cache xvfb x11vnc openbox"));
+        assert!(script.contains("cat > /usr/local/bin/start-desktop <<'EOF'\n#!/bin/sh\n"));
+        assert!(script.contains("x11vnc -display :0 -rfbport 5900"));
+        assert!(script.ends_with("EOF\nchmod +x /usr/local/bin/start-desktop\n"));
     }
 
     #[tokio::test]

@@ -3,7 +3,7 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-export const LIMITS_MB = { base: 10, desktop: 120 };
+export const LIMITS_MB = { base: 10 };
 
 /** Names of images whose size (bytes) is over their limit, with the measured size. */
 export function overLimit(sizes) {

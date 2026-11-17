@@ -50,8 +50,13 @@ async fn after_boot(sandbox: &Sandbox, template: &str) -> Result<()> {
 #[async_trait]
 impl SandboxBackend for MicroBackend {
     async fn create(&self, spec: Spec) -> Result<SandboxInfo> {
-        let mut builder = Sandbox::builder(&spec.name)
-            .image(spec.image.as_str())
+        let builder = Sandbox::builder(&spec.name);
+        // `override_snapshot` boots from a disk snapshot like `msb restore`, but keeps the normal builder,
+        // so labels, ports and mounts work. `Sandbox::restore` can't set labels.
+        let mut builder = match &spec.snapshot {
+            Some(snapshot) => builder.override_snapshot(snapshot),
+            None => builder.image(spec.image.as_str()),
+        }
             .cpus(spec.cpus)
             .memory(spec.memory_mib)
             .label(TEMPLATE, &spec.template);
@@ -70,14 +75,15 @@ impl SandboxBackend for MicroBackend {
             _ => NetworkPolicy::from_profiles([NetworkProfile::Public]),
         };
         builder = builder.network(|n| n.policy(policy));
-        let config = builder.build().await.map_err(err)?;
-        let sandbox = Sandbox::create_detached(config).await.map_err(err)?;
+        // The builder's own create resolves a snapshot before validating the image; `build()` doesn't.
+        let sandbox = builder.create_detached().await.map_err(err)?;
         after_boot(&sandbox, &spec.template).await?;
         info(&Sandbox::get(&spec.name).await.map_err(err)?)
     }
 
     async fn list(&self) -> Result<Vec<SandboxInfo>> {
-        Sandbox::list().await.map_err(err)?.sandboxes.iter().map(info).collect()
+        let all = Sandbox::list().await.map_err(err)?.sandboxes;
+        all.iter().filter(|h| !h.name().starts_with(crate::core::BUILD_PREFIX)).map(info).collect()
     }
 
     async fn start(&self, name: &str) -> Result<()> {
@@ -103,6 +109,10 @@ impl SandboxBackend for MicroBackend {
 
     async fn snapshot(&self, name: &str, snapshot: &str) -> Result<()> {
         Sandbox::get(name).await.map_err(err)?.snapshot(snapshot).await.map(|_| ()).map_err(err)
+    }
+
+    async fn has_snapshot(&self, snapshot: &str) -> Result<bool> {
+        Ok(microsandbox::Snapshot::get(snapshot).await.is_ok())
     }
 
     async fn delete(&self, name: &str) -> Result<()> {
@@ -140,5 +150,35 @@ impl SandboxBackend for MicroBackend {
     async fn metrics(&self, name: &str) -> Result<Metrics> {
         let m = Sandbox::get(name).await.map_err(err)?.metrics().await.map_err(err)?;
         Ok(Metrics { cpu_percent: m.cpu_percent, memory_bytes: m.memory_bytes })
+    }
+}
+
+/// Real microsandbox, not run by default. Needs MSB_PATH, MSB_LIBKRUNFW_PATH and MSB_HOME (see README):
+/// `cargo test real_desktop -- --ignored`.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{CreateOpts, Core, DESKTOP_SNAPSHOT};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    #[ignore = "boots real microVMs"]
+    async fn real_desktop_boots_from_the_local_snapshot() {
+        let core = Core::new(Arc::new(MicroBackend), crate::core::temp_dir());
+        let opts = |name: &str| CreateOpts { name: Some(name.into()), template: Some("desktop".into()), ..Default::default() };
+        for name in ["it-desktop-1", "it-desktop-2"] {
+            let _ = core.backend.delete(name).await;
+            let info = core.create(opts(name), Some("it".into())).await.unwrap();
+            assert_eq!((info.template.as_str(), info.agent.as_deref()), ("desktop", Some("it")));
+            let out = core.backend.exec(name, "sleep 1; pgrep x11vnc >/dev/null && which Xvfb openbox").await.unwrap();
+            assert_eq!(out.exit_code, 0, "{out:?}");
+        }
+        assert!(core.backend.has_snapshot(DESKTOP_SNAPSHOT).await.unwrap());
+        let names: Vec<_> = core.backend.list().await.unwrap().into_iter().map(|s| s.name).collect();
+        assert!(!names.iter().any(|n| n.starts_with(crate::core::BUILD_PREFIX)), "{names:?}");
+        for name in ["it-desktop-1", "it-desktop-2"] {
+            core.backend.stop(name).await.unwrap();
+            core.backend.delete(name).await.unwrap();
+        }
     }
 }
