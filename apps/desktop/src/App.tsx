@@ -17,6 +17,23 @@ export type Actions = {
 };
 
 const UNDO_MS = 5000;
+
+const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+
+/** A loading toast with a running clock, replaced by the outcome when `call` settles. */
+function waitToast<T>(call: Promise<T>, loading: string, success: (value: T) => string, error: string) {
+  const started = Date.now();
+  const id = toast.loading(`${loading} · ${clock(0)}`);
+  const tick = setInterval(() => {
+    toast.loading(`${loading} · ${clock(Math.floor((Date.now() - started) / 1000))}`, { id });
+  }, 1000);
+  void call
+    .then(
+      (value) => void toast.success(success(value), { id }),
+      () => void toast.error(error, { id }),
+    )
+    .finally(() => clearInterval(tick));
+}
 const showError = (error: unknown) => void toast.error(String(error));
 
 export function App({ api }: { api: Api }) {
@@ -54,8 +71,8 @@ export function App({ api }: { api: Api }) {
   const actions: Actions = {
     create: (opts) => {
       const call = api.create(opts);
-      // The first sandbox of each kind builds its snapshot (~10 s for a desktop, a few minutes for an agent);
-      // later ones boot from it in seconds.
+      // The first sandbox of each kind builds its snapshot; later ones boot from it in seconds. The toast counts
+      // the seconds, so a first build of a minute or two doesn't look stuck.
       const harness = opts.harness;
       if (harness) {
         // Without a usable stored key the agent asks you to sign in, so show its terminal straight away.
@@ -63,22 +80,26 @@ export function App({ api }: { api: Api }) {
           s,
           signIn: (await api.missingCredentials(harness)).length > 0,
         }));
-        toast.promise(signIn, {
-          loading: `Starting ${harness}… the first one takes a few minutes`,
-          success: ({ s, signIn }) =>
+        const what = opts.desktop ? `${harness} with a desktop` : harness;
+        const first = opts.desktop ? "about 2 minutes" : "about a minute";
+        waitToast(
+          signIn,
+          `Starting ${what}… the first one takes ${first}`,
+          ({ s, signIn }) =>
             signIn ? `Sign in to ${harness} in ${s.name}'s terminal` : `${s.name} is ready`,
-          error: () => `Couldn't start ${harness}`,
-        });
+          `Couldn't start ${harness}`,
+        );
         void signIn.then(
           ({ s, signIn }) => signIn && openSandbox(s.name, "terminal"),
           () => {},
         );
       } else if (opts.desktop)
-        toast.promise(call, {
-          loading: "Starting the desktop… the first one takes about 10 seconds",
-          success: (s) => `${s.name} is ready`,
-          error: () => "Couldn't start the desktop",
-        });
+        waitToast(
+          call,
+          "Starting the desktop… the first one takes about 2 minutes",
+          (s) => `${s.name} is ready`,
+          "Couldn't start the desktop",
+        );
       run(call);
     },
     start: (name) => {

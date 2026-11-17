@@ -108,6 +108,27 @@ describe("home", () => {
     });
   });
 
+  it("counts the seconds while a first agent build runs, so it doesn't look stuck", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const api = fakeApi();
+    let finish = (_: Sandbox) => {};
+    api.create = vi.fn(() => new Promise<Sandbox>((resolve) => (finish = resolve)));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<App api={api} />);
+    await user.click(await screen.findByRole("button", { name: "Sandbox options" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Harness" }), "codex");
+    await user.click(screen.getByRole("switch", { name: "Desktop" }));
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    await act(() => vi.advanceTimersByTimeAsync(65_000));
+    expect(
+      await screen.findByText(
+        /Starting codex with a desktop… the first one takes about 2 minutes · 1:0[5-9]/,
+      ),
+    ).toBeInTheDocument();
+    await act(async () => finish(sandbox({ name: "sandbox-7", harness: "codex" })));
+    expect(await screen.findByText("sandbox-7 is ready")).toBeInTheDocument();
+  });
+
   it("offers a missing key in the form, stores it, then creates", async () => {
     const api = fakeApi();
     api.missingCredentials = vi.fn(async () => ["anthropic", "openai"]);
