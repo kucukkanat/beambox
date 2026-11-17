@@ -16,6 +16,11 @@ pub struct Harness {
     package: &'static str,
     /// Credentials it can use, in order of preference.
     pub credentials: &'static [&'static str],
+    /// Where it keeps its sign-in (subscription or key) after you log in inside the sandbox.
+    pub login_path: &'static str,
+    /// Runs before the harness when no key is stored: signs in unless already signed in (a reused login).
+    /// `None` when the harness works without signing in and offers it inside (OpenCode's free models, `/connect`).
+    sign_in: Option<&'static str>,
     /// Its user-level MCP config file and the contents that register `beambox`.
     pub config_path: &'static str,
     config: &'static str,
@@ -28,9 +33,12 @@ pub const HARNESSES: &[Harness] = &[
         name: "claude-code",
         package: "@anthropic-ai/claude-code",
         credentials: &["anthropic"],
+        login_path: "/root/.claude/.credentials.json",
+        sign_in: Some("claude auth status >/dev/null 2>&1 || claude auth login"),
         config_path: "/root/.claude.json",
         config: r#"{
   "hasCompletedOnboarding": true,
+  "projects": { "/workspace": { "hasTrustDialogAccepted": true } },
   "mcpServers": { "beambox": { "type": "stdio", "command": "node", "args": ["/opt/beambox/mcp.js"] } }
 }
 "#,
@@ -40,6 +48,9 @@ pub const HARNESSES: &[Harness] = &[
         name: "codex",
         package: "@openai/codex",
         credentials: &["openai"],
+        login_path: "/root/.codex/auth.json",
+        // Device code: the browser step needs no callback into the sandbox.
+        sign_in: Some("codex login status >/dev/null 2>&1 || codex login --device-auth"),
         config_path: "/root/.codex/config.toml",
         config: "[mcp_servers.beambox]\ncommand = \"node\"\nargs = [\"/opt/beambox/mcp.js\"]\n",
         command: |task| task.map_or("codex".into(), |t| format!("codex -- {t}")),
@@ -48,6 +59,8 @@ pub const HARNESSES: &[Harness] = &[
         name: "opencode",
         package: "opencode-ai",
         credentials: &["anthropic", "openai"],
+        login_path: "/root/.local/share/opencode/auth.json",
+        sign_in: None,
         config_path: "/root/.config/opencode/opencode.json",
         config: r#"{
   "$schema": "https://opencode.ai/config.json",
@@ -70,18 +83,25 @@ impl Harness {
 
     /// Starts the harness detached in tmux session `agent`, in `/workspace`. When it exits, a shell stays in
     /// the session. tmux passes the caller's environment (the credential) on to the harness; it is then removed
-    /// from tmux's global environment and the shell after it, so only the harness has it.
-    pub fn start_command(&self, task: Option<&str>) -> String {
-        let harness = (self.command)(task.map(sh_quote).as_deref());
+    /// from tmux's global environment and the shell after it, so only the harness has it. With `sign_in` (no key
+    /// stored), the harness's own login runs first; links it opens go to the computer's browser (`beambox-open`).
+    pub fn start_command(&self, task: Option<&str>, sign_in: bool) -> String {
+        let mut harness = (self.command)(task.map(sh_quote).as_deref());
+        if let (true, Some(login)) = (sign_in, self.sign_in) {
+            harness = format!("{login}; {harness}");
+        }
         let unset = format!("unset {}", CREDENTIAL_VARS.join(" "));
         let forget: Vec<_> = CREDENTIAL_VARS.iter().map(|v| format!(" && tmux set-environment -g -u {v}")).collect();
         format!(
-            "tmux new-session -d -s {SESSION} -c /workspace {}{}",
+            "tmux new-session -d -s {SESSION} -c /workspace -e BROWSER={OPEN_PATH} {}{}",
             sh_quote(&format!("{harness}; {unset}; exec bash -l")),
             forget.concat()
         )
     }
 }
+
+/// The sandbox's browser: hands links to the Beambox app (see `images/agent/beambox-open`).
+pub const OPEN_PATH: &str = "/usr/local/bin/beambox-open";
 
 const CREDENTIAL_VARS: &[&str] = &["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY"];
 
@@ -133,8 +153,11 @@ pub fn agent_setup(harness: &Harness, desktop: bool) -> String {
         "set -e\nexport DEBIAN_FRONTEND=noninteractive\napt-get update\n\
          {apt} ca-certificates curl gnupg git tmux procps\n\
          curl -fsSL https://deb.nodesource.com/setup_24.x | bash -\n{apt} nodejs\n\
-         npm install -g {}\nmkdir -p /workspace /opt/beambox /etc/beambox \"$(dirname {})\"\n",
-        harness.package, harness.config_path,
+         npm install -g {}\nmkdir -p /workspace /opt/beambox /etc/beambox \"$(dirname {})\"\n\
+         echo 'set -g allow-passthrough all' >> /etc/tmux.conf\n{}chmod +x {OPEN_PATH}\n",
+        harness.package,
+        harness.config_path,
+        file(OPEN_PATH, include_str!("../../images/agent/beambox-open")),
     );
     if desktop {
         script += &format!(
@@ -192,19 +215,45 @@ mod tests {
 
     #[test]
     fn harnesses_start_in_tmux_with_the_task_as_first_prompt() {
-        let start = |h: &str, task| harness(h).unwrap().start_command(task);
+        let start = |h: &str, task| harness(h).unwrap().start_command(task, false);
         let unset = "unset ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN OPENAI_API_KEY; exec bash -l";
         let forget = " && tmux set-environment -g -u ANTHROPIC_API_KEY && tmux set-environment -g -u CLAUDE_CODE_OAUTH_TOKEN \
                       && tmux set-environment -g -u OPENAI_API_KEY";
+        let session = "tmux new-session -d -s agent -c /workspace -e BROWSER=/usr/local/bin/beambox-open";
         assert_eq!(
             start("claude-code", Some("fix the tests")),
-            format!(r#"tmux new-session -d -s agent -c /workspace 'claude -- '\''fix the tests'\''; {unset}'{forget}"#)
+            format!(r#"{session} 'claude -- '\''fix the tests'\''; {unset}'{forget}"#)
         );
-        assert_eq!(start("codex", None), format!("tmux new-session -d -s agent -c /workspace 'codex; {unset}'{forget}"));
+        assert_eq!(start("codex", None), format!("{session} 'codex; {unset}'{forget}"));
         // A task that looks like a flag is still the prompt.
         assert!(start("codex", Some("-v is broken")).contains("codex -- '\\''-v is broken'\\''"));
         assert!(start("opencode", Some("go")).contains("opencode --prompt go;"));
         assert!(harness("gemini").err().unwrap().contains("claude-code, codex, opencode"));
+    }
+
+    #[test]
+    fn without_a_key_the_harness_signs_in_first_unless_already_signed_in() {
+        let start = |h: &str| harness(h).unwrap().start_command(Some("go"), true);
+        assert!(start("claude-code").contains("'claude auth status >/dev/null 2>&1 || claude auth login; claude -- go;"));
+        assert!(start("codex").contains("'codex login status >/dev/null 2>&1 || codex login --device-auth; codex -- go;"));
+        // OpenCode runs on its free models and offers /connect inside, so it starts straight away.
+        assert!(start("opencode").contains("-e BROWSER=/usr/local/bin/beambox-open 'opencode --prompt go;"));
+        // With a stored key there's nothing to sign in to.
+        assert!(!harness("claude-code").unwrap().start_command(None, false).contains("auth"));
+    }
+
+    #[test]
+    fn links_opened_in_the_sandbox_reach_the_app_through_tmux() {
+        let setup = agent_setup(harness("codex").unwrap(), false);
+        assert!(setup.contains("echo 'set -g allow-passthrough all' >> /etc/tmux.conf"));
+        assert!(setup.contains("cat > /usr/local/bin/beambox-open <<'EOF'\n#!/bin/sh\n"));
+        assert!(setup.contains("chmod +x /usr/local/bin/beambox-open"));
+        let script = include_str!("../../images/agent/beambox-open");
+        assert!(script.contains("https://*) ;;"), "only https links");
+        assert!(script.contains("]1337;BeamboxOpen=%s"));
+        // Claude Code doesn't ask whether to trust /workspace.
+        let config: serde_json::Value = serde_json::from_str(harness("claude-code").unwrap().config().1).unwrap();
+        assert_eq!(config["projects"]["/workspace"]["hasTrustDialogAccepted"], true);
     }
 
     #[test]

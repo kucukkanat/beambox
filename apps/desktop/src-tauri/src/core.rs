@@ -1,6 +1,6 @@
 //! Shared logic for the GUI and the CLI: defaults, naming, port picking, snapshots, agents and take-over.
 use crate::agent::{self, Harness};
-use crate::backend::{Port, Result, SandboxBackend, SandboxInfo, Spec};
+use crate::backend::{Port, Result, SandboxBackend, SandboxInfo, Spec, Status};
 use crate::credentials::Secrets;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -27,7 +27,7 @@ pub fn snapshot_key(harness: Option<&str>, desktop: bool) -> Option<(String, Str
         (None, true) => Some(("beambox-build-desktop".into(), "beambox-desktop-3".into())),
         (Some(h), d) => {
             let key = if d { format!("{h}-desktop") } else { h.to_string() };
-            Some((format!("{BUILD_PREFIX}{key}"), format!("beambox-{key}-2")))
+            Some((format!("{BUILD_PREFIX}{key}"), format!("beambox-{key}-3")))
         }
     }
 }
@@ -71,7 +71,7 @@ pub struct Core {
     pub secrets: Arc<dyn Secrets>,
     is_port_free: fn(u16) -> bool,
     /// Holds `snapshot-build.lock`, which serialises snapshot builds across the app and CLI processes, so
-    /// concurrent creates build each snapshot once.
+    /// concurrent creates build each snapshot once, and `logins/<harness>`, each harness's latest sign-in.
     lock_dir: PathBuf,
 }
 
@@ -85,25 +85,34 @@ impl Core {
         Self { backend, secrets, is_port_free: probe, lock_dir: std::env::temp_dir() }
     }
 
-    /// The harness's credential as `(variable, value)`, or what to run to store one.
+    /// The harness's credential as `(variable, value)`, or which key is missing.
     pub fn credential_env(&self, harness: &Harness) -> Result<(String, String)> {
         for provider in harness.credentials {
             if let Some(env) = self.secrets.get(provider)?.and_then(|value| agent::credential_env(harness, provider, &value)) {
                 return Ok(env);
             }
         }
-        let wanted = harness.credentials.join(" or ");
+        // Said in the app's words: the app asks for the key before creating, and the CLI adds its own command.
         Err(format!(
-            "{} needs the {wanted} credential. Run `beambox credentials set {}` (it reads the key from stdin), or add \
-             it in the app under Settings → Credentials.",
-            harness.name, harness.credentials[0]
+            "{} needs an {} key. Add one under Settings → Credentials.",
+            harness.name,
+            harness.credentials.join(" or ")
         ))
+    }
+
+    /// The keys `harness` could use when it has neither a usable stored key nor a saved login, in order of
+    /// preference; empty when it starts signed in. A stored key it can't use (OpenCode and a Claude subscription
+    /// token) counts as missing.
+    pub fn missing_credentials(&self, harness: &str) -> Result<Vec<&'static str>> {
+        let harness = agent::harness(harness)?;
+        let ready = self.credential_env(harness).is_ok() || self.login_file(harness).exists();
+        Ok(if ready { vec![] } else { harness.credentials.to_vec() })
     }
 
     pub async fn create(&self, opts: CreateOpts) -> Result<SandboxInfo> {
         let harness = opts.harness.as_deref().map(agent::harness).transpose()?;
-        // Before anything boots: an agent without its credential is no use.
-        let env = harness.map(|h| self.credential_env(h)).transpose()?;
+        // No usable stored key is fine: the harness then shows its own sign-in in its terminal.
+        let env = harness.and_then(|h| self.credential_env(h).ok());
         let desktop = opts.desktop.unwrap_or(false) || opts.template.as_deref() == Some("desktop");
         let template = if desktop { "desktop".to_string() } else { opts.template.clone().unwrap_or_else(|| "base".into()) };
         let &(_, mut image, mut memory, default_ports) =
@@ -133,17 +142,77 @@ impl Core {
             snapshot,
         };
         let info = self.backend.create(spec).await?;
-        if let (Some(h), Some(env)) = (harness, env) {
+        if let Some(h) = harness {
+            // Signed in once already? Reuse that login, unless a stored key is used instead.
+            if env.is_none() {
+                self.reuse_login(&info, h).await?;
+            }
             self.start_agent(&info, h, opts.task.as_deref(), env).await?;
         }
         Ok(info)
     }
 
-    /// Start the harness in tmux session `agent`. Its credential goes into that one process's environment only.
-    async fn start_agent(&self, info: &SandboxInfo, harness: &Harness, task: Option<&str>, env: (String, String)) -> Result<()> {
+    fn login_file(&self, harness: &Harness) -> PathBuf {
+        self.lock_dir.join("logins").join(harness.name)
+    }
+
+    /// Keep the sign-in in an agent sandbox as its harness's latest, so new sandboxes of that harness start
+    /// signed in. A sandbox that isn't running or isn't signed in has nothing to give.
+    async fn save_login(&self, info: &SandboxInfo) -> Result<()> {
+        let Some(harness) = info.harness.as_deref().map(agent::harness).transpose()? else { return Ok(()) };
+        if info.status != Status::Running {
+            return Ok(());
+        }
+        let Ok(login) = self.backend.read_file(&info.name, harness.login_path).await else { return Ok(()) };
+        let file = self.login_file(harness);
+        if login.is_empty() || std::fs::read(&file).is_ok_and(|saved| saved == login) {
+            return Ok(());
+        }
+        write_private(&file, &login).map_err(|e| format!("can't save the {} login: {e}", harness.name))
+    }
+
+    /// Give a new sandbox its harness's latest sign-in: first collect it from the other running sandboxes of that
+    /// harness (a harness refreshes its login as it runs), then copy the newest one in.
+    async fn reuse_login(&self, new: &SandboxInfo, harness: &Harness) -> Result<()> {
+        let others = self.backend.list().await?;
+        for other in others.iter().filter(|s| s.name != new.name && s.harness.as_deref() == Some(harness.name)) {
+            self.save_login(other).await?;
+        }
+        let Ok(login) = std::fs::read(self.login_file(harness)) else { return Ok(()) };
+        let (path, dir) = (harness.login_path, harness.login_path.rsplit_once('/').map_or("/", |(dir, _)| dir));
+        self.backend.exec(&new.name, &format!("mkdir -p {dir}")).await?;
+        self.backend.write_file(&new.name, path, login).await?;
+        // As private as the harness's own copy.
+        self.backend.exec(&new.name, &format!("chmod 600 {path}")).await.map(|_| ())
+    }
+
+    /// Stop a sandbox, keeping its harness's sign-in first.
+    pub async fn stop(&self, name: &str) -> Result<()> {
+        self.save_login_of(name).await;
+        self.backend.stop(name).await
+    }
+
+    /// A login is a convenience: failing to save one never blocks stopping or deleting.
+    async fn save_login_of(&self, name: &str) {
+        if let Ok(all) = self.backend.list().await {
+            if let Some(info) = all.iter().find(|s| s.name == name) {
+                let _ = self.save_login(info).await;
+            }
+        }
+    }
+
+    /// Start the harness in tmux session `agent`. A stored credential goes into that one process's environment
+    /// only; without one, the harness asks you to sign in.
+    async fn start_agent(
+        &self,
+        info: &SandboxInfo,
+        harness: &Harness,
+        task: Option<&str>,
+        env: Option<(String, String)>,
+    ) -> Result<()> {
         let details = serde_json::json!({ "name": info.name, "harness": harness.name, "desktop": info.template == "desktop" });
         self.backend.write_file(&info.name, agent::INFO_PATH, details.to_string().into_bytes()).await?;
-        let out = self.backend.exec_env(&info.name, &harness.start_command(task), &[env]).await?;
+        let out = self.backend.exec_env(&info.name, &harness.start_command(task, env.is_none()), env.as_slice()).await?;
         if out.exit_code != 0 {
             return Err(format!("couldn't start {}: {}", harness.name, out.stderr.trim()));
         }
@@ -162,7 +231,7 @@ impl Core {
         match &info.harness {
             Some(h) => {
                 let harness = agent::harness(h)?;
-                self.start_agent(info, harness, None, self.credential_env(harness)?).await
+                self.start_agent(info, harness, None, self.credential_env(harness).ok()).await
             }
             None => Ok(()),
         }
@@ -276,9 +345,21 @@ impl Core {
         self.backend.snapshot(name, &snapshot).await.map(|_| snapshot)
     }
 
+    /// Delete a sandbox, keeping its harness's sign-in first.
     pub async fn delete(&self, name: &str) -> Result<()> {
+        self.save_login_of(name).await;
         self.backend.delete(name).await
     }
+}
+
+/// Write a file only the current user can read: logins are as good as passwords.
+fn write_private(file: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    std::fs::create_dir_all(file.parent().expect("has a parent"))?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    std::io::Write::write_all(&mut options.open(file)?, data)
 }
 
 pub fn takeover_command(on: bool) -> String {
@@ -303,6 +384,75 @@ mod tests {
     fn core_with(probe: fn(u16) -> bool) -> (Arc<FakeBackend>, Core) {
         let fake = Arc::new(FakeBackend::default());
         (fake.clone(), Core::with_port_probe(fake, Arc::new(FakeSecrets::with("anthropic", KEY)), probe))
+    }
+
+    /// A Core whose logins and locks live in a fresh folder.
+    fn core_in_fresh_dir(fake: Arc<FakeBackend>, secrets: Arc<FakeSecrets>) -> (Core, std::path::PathBuf) {
+        use std::hash::{BuildHasher, RandomState};
+        let dir = std::env::temp_dir().join(format!("beambox-test-{:x}", RandomState::new().hash_one(0u8)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut core = Core::with_port_probe(fake, secrets, |_| true);
+        core.lock_dir = dir.clone();
+        (core, dir)
+    }
+
+    fn named(name: &str, harness: &str) -> CreateOpts {
+        CreateOpts { name: Some(name.into()), harness: Some(harness.into()), ..Default::default() }
+    }
+
+    const CLAUDE_LOGIN: &str = "/root/.claude/.credentials.json";
+
+    #[tokio::test]
+    async fn signing_in_once_signs_in_every_new_sandbox_of_that_harness() {
+        let fake = Arc::new(FakeBackend::default());
+        let (core, dir) = core_in_fresh_dir(fake.clone(), Arc::new(FakeSecrets::default()));
+        core.create(named("a", "claude-code")).await.unwrap();
+        // You sign in inside `a`; the harness writes its login file.
+        fake.write_file("a", CLAUDE_LOGIN, b"{\"token\":1}".to_vec()).await.unwrap();
+        assert_eq!(core.missing_credentials("claude-code").unwrap(), ["anthropic"], "not saved until it's seen");
+        core.create(named("b", "claude-code")).await.unwrap();
+        assert_eq!(fake.read_file("b", CLAUDE_LOGIN).await.unwrap(), b"{\"token\":1}");
+        assert!(fake.execs.lock().unwrap().iter().any(|(n, c)| n == "b" && c == "chmod 600 /root/.claude/.credentials.json"));
+        // Signed in now: the app stops offering a key and doesn't open the terminal to sign in.
+        assert!(core.missing_credentials("claude-code").unwrap().is_empty());
+        assert_eq!(core.missing_credentials("codex").unwrap(), ["openai"]);
+        // Kept for later, readable by you alone.
+        let saved = dir.join("logins").join("claude-code");
+        assert_eq!(std::fs::read(&saved).unwrap(), b"{\"token\":1}");
+        #[cfg(unix)]
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&saved).unwrap().permissions()) & 0o777, 0o600);
+        // Another harness doesn't get it.
+        core.create(named("c", "codex")).await.unwrap();
+        assert!(fake.read_file("c", CLAUDE_LOGIN).await.is_err());
+        assert!(fake.read_file("c", "/root/.codex/auth.json").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_refreshed_login_is_kept_when_its_sandbox_stops_or_is_deleted() {
+        let fake = Arc::new(FakeBackend::default());
+        let (core, _dir) = core_in_fresh_dir(fake.clone(), Arc::new(FakeSecrets::default()));
+        core.create(named("a", "codex")).await.unwrap();
+        fake.write_file("a", "/root/.codex/auth.json", b"v1".to_vec()).await.unwrap();
+        core.stop("a").await.unwrap();
+        core.create(named("b", "codex")).await.unwrap();
+        assert_eq!(fake.read_file("b", "/root/.codex/auth.json").await.unwrap(), b"v1");
+        // `b` refreshes its login, then is deleted: the next sandbox gets the refreshed one.
+        fake.write_file("b", "/root/.codex/auth.json", b"v2".to_vec()).await.unwrap();
+        core.delete("b").await.unwrap();
+        core.create(named("c", "codex")).await.unwrap();
+        assert_eq!(fake.read_file("c", "/root/.codex/auth.json").await.unwrap(), b"v2");
+    }
+
+    #[tokio::test]
+    async fn a_stored_key_wins_over_a_reused_login() {
+        let fake = Arc::new(FakeBackend::default());
+        let secrets = Arc::new(FakeSecrets::default());
+        let (core, _dir) = core_in_fresh_dir(fake.clone(), secrets.clone());
+        core.create(named("a", "claude-code")).await.unwrap();
+        fake.write_file("a", CLAUDE_LOGIN, b"login".to_vec()).await.unwrap();
+        secrets.set("anthropic", "sk-ant-api03-x").unwrap();
+        core.create(named("b", "claude-code")).await.unwrap();
+        assert!(fake.read_file("b", CLAUDE_LOGIN).await.is_err(), "the key is used, so no login is copied in");
     }
 
     fn agent(task: &str) -> CreateOpts {
@@ -362,7 +512,7 @@ mod tests {
         let info = core.create(agent("fix the tests")).await.unwrap();
         assert_eq!(info.harness.as_deref(), Some("claude-code"));
         let spec = fake.specs.lock().unwrap().last().unwrap().clone();
-        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-claude-code:beambox-claude-code-2"));
+        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-claude-code:beambox-claude-code-3"));
         assert_eq!((spec.image.as_str(), spec.cpus, spec.memory_mib), ("debian:trixie-slim", 2, 2048));
         assert_eq!(spec.harness.as_deref(), Some("claude-code"));
         let execs = fake.execs.lock().unwrap().clone();
@@ -403,14 +553,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_missing_credential_fails_before_anything_boots() {
+    async fn without_a_stored_key_the_harness_starts_and_signs_in_itself() {
         let fake = Arc::new(FakeBackend::default());
         let core = Core::with_port_probe(fake.clone(), Arc::new(FakeSecrets::default()), |_| true);
-        let err = core.create(agent("x")).await.unwrap_err();
-        assert!(err.contains("beambox credentials set anthropic"), "{err}");
-        let codex = CreateOpts { harness: Some("codex".into()), ..Default::default() };
-        assert!(core.create(codex).await.unwrap_err().contains("beambox credentials set openai"));
-        assert!(fake.specs.lock().unwrap().is_empty() && fake.execs.lock().unwrap().is_empty());
+        let info = core.create(agent("x")).await.unwrap();
+        assert_eq!(info.harness.as_deref(), Some("claude-code"));
+        // Started in tmux like any agent, with nothing in its environment: it shows its own login.
+        let envs = fake.envs.lock().unwrap().clone();
+        assert_eq!(envs, [(info.name.clone(), vec![])]);
+        assert!(fake.execs.lock().unwrap().iter().any(|(n, c)| *n == info.name && c.contains("tmux new-session -d -s agent")));
+        // The app still offers the key it could use.
+        assert_eq!(core.missing_credentials("claude-code").unwrap(), ["anthropic"]);
+        assert_eq!(core.missing_credentials("opencode").unwrap(), ["anthropic", "openai"]);
     }
 
     #[tokio::test]
@@ -418,12 +572,16 @@ mod tests {
         let fake = Arc::new(FakeBackend::default());
         let secrets = Arc::new(FakeSecrets::with("anthropic", "sk-ant-oat01-subscription"));
         let core = Core::with_port_probe(fake.clone(), secrets.clone(), |_| true);
-        let opencode = || CreateOpts { harness: Some("opencode".into()), ..Default::default() };
-        assert!(core.create(opencode()).await.unwrap_err().contains("beambox credentials set anthropic"));
-        assert!(fake.specs.lock().unwrap().is_empty());
+        let opencode = |name: &str| CreateOpts { name: Some(name.into()), harness: Some("opencode".into()), ..Default::default() };
+        // The subscription token is never handed to OpenCode, which then signs in on its own.
+        core.create(opencode("a")).await.unwrap();
+        assert_eq!(fake.envs.lock().unwrap()[0].1, []);
+        assert_eq!(core.missing_credentials("opencode").unwrap(), ["anthropic", "openai"]);
+        assert!(core.missing_credentials("claude-code").unwrap().is_empty());
         secrets.set("openai", "sk-proj-x").unwrap();
-        core.create(opencode()).await.unwrap();
-        assert_eq!(fake.envs.lock().unwrap()[0].1, [("OPENAI_API_KEY".to_string(), "sk-proj-x".to_string())]);
+        assert!(core.missing_credentials("opencode").unwrap().is_empty());
+        core.create(opencode("b")).await.unwrap();
+        assert_eq!(fake.envs.lock().unwrap()[1].1, [("OPENAI_API_KEY".to_string(), "sk-proj-x".to_string())]);
     }
 
     #[tokio::test]
@@ -433,7 +591,7 @@ mod tests {
         let info = core.create(opts).await.unwrap();
         assert_eq!((info.template.as_str(), info.memory_mib), ("desktop", 4096));
         let spec = fake.specs.lock().unwrap().last().unwrap().clone();
-        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-2"));
+        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-3"));
     }
 
     #[tokio::test]
@@ -458,7 +616,7 @@ mod tests {
         let specs = fake.specs.lock().unwrap().clone();
         let snapshot = |name: &str| specs.iter().find(|s| s.name == name).unwrap().snapshot.clone().unwrap();
         assert_eq!(snapshot("a"), snapshot("b"));
-        assert_eq!(snapshot("c"), "beambox-build-codex-desktop:beambox-codex-desktop-2");
+        assert_eq!(snapshot("c"), "beambox-build-codex-desktop:beambox-codex-desktop-3");
         assert_eq!(snapshot("e"), "beambox-build-desktop:beambox-desktop-3");
         let c = specs.iter().find(|s| s.name == "c").unwrap();
         assert_eq!((c.memory_mib, c.ports.len(), c.template.as_str()), (4096, 1, "desktop"));
@@ -469,7 +627,7 @@ mod tests {
     #[test]
     fn snapshot_names_are_group_and_member() {
         assert_eq!(snapshot_name(None, false), None);
-        assert_eq!(snapshot_name(Some("opencode"), true).unwrap(), "beambox-build-opencode-desktop:beambox-opencode-desktop-2");
+        assert_eq!(snapshot_name(Some("opencode"), true).unwrap(), "beambox-build-opencode-desktop:beambox-opencode-desktop-3");
         for (h, d) in [(None, true), (Some("codex"), false)] {
             assert!(snapshot_key(h, d).unwrap().0.starts_with(BUILD_PREFIX));
         }

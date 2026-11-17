@@ -11,9 +11,19 @@ Beambox desktop: a Tauri 2 app that gives each AI agent its own computer, a micr
 - **GUI**: a grid of sandbox cards (start, stop, fork, snapshot, delete with 5 s undo). Each sandbox has Terminal,
   Files, Logs, Ports and, with a desktop, a noVNC Desktop tab. Agent sandboxes also get **Take over**, which
   freezes the harness (SIGSTOP) so you can use the terminal and desktop undisturbed, and **Hand back** (SIGCONT).
-- **Credentials** (Settings → Credentials, or `beambox credentials`): an Anthropic key or `claude setup-token`
-  token and an OpenAI key, stored in the OS keychain (`keyring` crate) and passed only as the harness process's
-  environment at start: never written to the sandbox's disk, exec arguments or logs.
+- **Signing in** happens inside the sandbox, with a subscription or a key. Without a stored key, the harness signs
+  in in its own terminal before starting on the task: Claude Code runs `claude auth login`, Codex runs
+  `codex login --device-auth`, and OpenCode starts on its free models (`/connect` adds a provider). The app opens
+  the agent's Terminal tab for it. Sign-in pages open in the computer's browser: the sandbox's `$BROWSER`
+  (`images/agent/beambox-open`) sends an OSC 1337 `BeamboxOpen=<url>` through tmux (`allow-passthrough all`),
+  and the Terminal tab opens https links only (`src/links.ts`).
+- **Logins are reused per harness.** Beambox keeps each harness's newest login file (`login_path` in `agent.rs`)
+  in `<app data>/logins/<harness>`, owner-only. It collects it from that harness's running sandboxes when one is
+  created, stopped or deleted, and copies it into every new sandbox of that harness, so you sign in once per
+  harness. Logins live on sandbox disks (and in forks and snapshots of them).
+- **Stored keys** (optional; Settings → Credentials, the New sandbox form, or `beambox credentials`): an Anthropic key
+  or `claude setup-token` token and an OpenAI key, kept in the OS keychain (`keyring` crate) and passed only as
+  the harness process's environment at start. A stored key wins over a saved login.
 - **CLI**: the same `beambox` binary run with a command. Everything the window does, from a terminal (see
   [Command line](#command-line)).
 - **Desktop tab**: noVNC connects to a per-sandbox proxy on 127.0.0.1 that only accepts the app's own webview
@@ -150,9 +160,10 @@ Run on a fresh machine (macOS Apple Silicon, Ubuntu with KVM, Windows 11) for ev
    none shows.
 3. Click 1: **New sandbox**. The card goes from booting (pulsing amber) to running (green).
 4. Click 2: **Open**. The Terminal tab is already active and shows a `sandbox-1:/#` prompt.
-5. Pass if the prompt appears within 3 clicks. Also check: `echo hi` works; with a key under
-   **Settings → Credentials**, **▾ → Harness: Claude Code, Task: "list the files here"** opens to Claude Code
-   working in its Terminal tab, and **Take over** / **Hand back** pause and resume it.
+5. Pass if the prompt appears within 3 clicks. Also check: `echo hi` works; with no key stored,
+   **▾ → Harness: Claude Code, Task: "list the files here"** opens its Terminal tab on Claude's sign-in, the
+   sign-in page opens in your browser, and after signing in Claude works on the task. A second Claude Code
+   sandbox starts signed in. **Take over** / **Hand back** pause and resume it.
 6. **Install the beambox command**, then in a new terminal: `beambox list`, `beambox exec sandbox-1 -- uname -a`,
    `beambox shell sandbox-1` (type `exit` to leave) and `beambox desktop <a desktop sandbox>`.
 

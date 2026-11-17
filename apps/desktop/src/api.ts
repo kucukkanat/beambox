@@ -1,5 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 export type Status = "booting" | "running" | "stopped" | "crashed";
 export type Port = { guest: number; host: number };
@@ -48,6 +49,10 @@ export type Api = {
   setTakeover(name: string, on: boolean): Promise<void>;
   /** Names of the stored credentials (`anthropic`, `openai`), never their values. */
   credentials(): Promise<string[]>;
+  /** Open a link (e.g. a harness's sign-in page) in the computer's default browser. */
+  openUrl(url: string): Promise<void>;
+  /** Keys `harness` could use when none it can use is stored yet, in order of preference; empty when ready. */
+  missingCredentials(harness: Harness): Promise<string[]>;
   setCredential(name: string, value: string): Promise<void>;
   removeCredential(name: string): Promise<void>;
   hypervisor(): Promise<Hypervisor>;
@@ -86,6 +91,8 @@ export const tauriApi: Api = {
   takeover: (name) => invoke("takeover", { name }),
   setTakeover: (name, on) => invoke("set_takeover", { name, on }),
   credentials: () => invoke("credentials_list"),
+  openUrl: (url) => openUrl(url),
+  missingCredentials: (harness) => invoke("credentials_missing", { harness }),
   setCredential: (name, value) => invoke("credentials_set", { name, value }),
   removeCredential: (name) => invoke("credentials_remove", { name }),
   hypervisor: () => invoke("hypervisor_status"),

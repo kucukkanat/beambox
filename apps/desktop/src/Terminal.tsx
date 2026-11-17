@@ -1,8 +1,10 @@
 import "@xterm/xterm/css/xterm.css";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { useEffect, useRef } from "react";
 import type { Api } from "./api.ts";
+import { linkToOpen } from "./links.ts";
 
 /** A login shell in the sandbox: xterm.js over an SDK exec session with a TTY. */
 export function Terminal({ api, name }: { api: Api; name: string }) {
@@ -16,6 +18,14 @@ export function Terminal({ api, name }: { api: Api; name: string }) {
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    // Links (an agent's sign-in page, say) open in the computer's browser, not inside the app.
+    term.loadAddon(new WebLinksAddon((_event, url) => void api.openUrl(url)));
+    // A harness signing in inside the sandbox opens its page in the computer's browser (see links.ts).
+    const opener = term.parser.registerOscHandler(1337, (data) => {
+      const url = linkToOpen(data);
+      if (url) void api.openUrl(url);
+      return url !== null;
+    });
     term.open(element);
     fit.fit();
     let id: number | undefined;
@@ -42,6 +52,7 @@ export function Terminal({ api, name }: { api: Api; name: string }) {
       if (id !== undefined) void api.terminalClose(id);
       resize.disconnect();
       input.dispose();
+      opener.dispose();
       term.dispose();
     };
   }, [api, name]);

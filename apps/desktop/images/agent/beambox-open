@@ -1,0 +1,9 @@
+#!/bin/sh
+# The sandbox's browser ($BROWSER): asks the Beambox app to open the link in the computer's own browser, so
+# sign-in pages work without a desktop. The app's terminal catches this escape (passed through tmux); only
+# https links are opened. Fails quietly when no terminal is attached, and the harness then shows the link.
+case "$1" in
+  https://*) ;;
+  *) exit 1 ;;
+esac
+printf '\033Ptmux;\033\033]1337;BeamboxOpen=%s\007\033\\' "$1" >/dev/tty 2>/dev/null

@@ -103,7 +103,7 @@ async fn start(app: State<'_, App>, name: String) -> Result<()> {
 
 #[tauri::command]
 async fn stop(app: State<'_, App>, name: String) -> Result<()> {
-    app.core.backend.stop(&name).await
+    app.core.stop(&name).await
 }
 
 #[tauri::command]
@@ -169,6 +169,12 @@ async fn takeover(app: State<'_, App>, name: String) -> Result<bool> {
 #[tauri::command]
 fn credentials_list(app: State<'_, App>) -> Result<Vec<String>> {
     credentials::stored(app.core.secrets.as_ref())
+}
+
+/// The keys a harness could use when none it can use is stored yet; empty when it's ready to create.
+#[tauri::command]
+fn credentials_missing(app: State<'_, App>, harness: String) -> Result<Vec<&'static str>> {
+    app.core.missing_credentials(&harness)
 }
 
 #[tauri::command]
@@ -308,6 +314,8 @@ pub fn run(open: Option<String>) {
                 let _ = app.emit("open", name);
             }
         }))
+        // Sign-in links in an agent's terminal open in the computer's own browser.
+        .plugin(tauri_plugin_opener::init())
         .manage(App {
             core,
             terminals: Default::default(),
@@ -333,6 +341,7 @@ pub fn run(open: Option<String>) {
             credentials_list,
             credentials_set,
             credentials_remove,
+            credentials_missing,
             hypervisor_status,
             enable_hypervisor,
             install_cli,

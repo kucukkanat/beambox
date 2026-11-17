@@ -56,13 +56,24 @@ export function App({ api }: { api: Api }) {
       const call = api.create(opts);
       // The first sandbox of each kind builds its snapshot (~10 s for a desktop, a few minutes for an agent);
       // later ones boot from it in seconds.
-      if (opts.harness)
-        toast.promise(call, {
-          loading: `Starting ${opts.harness}… the first one takes a few minutes`,
-          success: (s) => `${s.name} is ready`,
-          error: () => `Couldn't start ${opts.harness}`,
+      const harness = opts.harness;
+      if (harness) {
+        // Without a usable stored key the agent asks you to sign in, so show its terminal straight away.
+        const signIn = call.then(async (s) => ({
+          s,
+          signIn: (await api.missingCredentials(harness)).length > 0,
+        }));
+        toast.promise(signIn, {
+          loading: `Starting ${harness}… the first one takes a few minutes`,
+          success: ({ s, signIn }) =>
+            signIn ? `Sign in to ${harness} in ${s.name}'s terminal` : `${s.name} is ready`,
+          error: () => `Couldn't start ${harness}`,
         });
-      else if (opts.desktop)
+        void signIn.then(
+          ({ s, signIn }) => signIn && openSandbox(s.name, "terminal"),
+          () => {},
+        );
+      } else if (opts.desktop)
         toast.promise(call, {
           loading: "Starting the desktop… the first one takes about 10 seconds",
           success: (s) => `${s.name} is ready`,

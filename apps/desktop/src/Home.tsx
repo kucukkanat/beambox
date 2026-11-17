@@ -19,7 +19,7 @@ export function Home({ api, sandboxes, actions, onOpen }: Props) {
         <Licences />
         <Settings api={api} />
         <InstallCli api={api} />
-        <NewSandbox onCreate={actions.create} />
+        <NewSandbox api={api} onCreate={actions.create} />
       </header>
       {sandboxes.length === 0 && (
         <p className="text-muted-foreground text-sm">
@@ -163,14 +163,43 @@ const HARNESSES: [Harness, string][] = [
   ["opencode", "OpenCode"],
 ];
 
-function NewSandbox({ onCreate }: { onCreate(opts: CreateOpts): void }) {
+const KEY_HELP: Record<string, [label: string, help: string]> = {
+  anthropic: ["Anthropic key", "An API key from console.anthropic.com → API keys."],
+  openai: ["OpenAI key", "An API key from platform.openai.com → API keys."],
+};
+
+function NewSandbox({ api, onCreate }: { api: Api; onCreate(opts: CreateOpts): void }) {
   const [open, setOpen] = useState(false);
   const [harness, setHarness] = useState("");
   const [desktop, setDesktop] = useState(false);
-  const submit = (event: FormEvent<HTMLFormElement>) => {
+  // Keys the chosen agent could use when none is stored yet. Optional: without one, the agent asks you to sign in
+  // (subscription or key) in its own terminal, which the app opens after creating it.
+  const [missing, setMissing] = useState<string[]>([]);
+  const [provider, setProvider] = useState("");
+  useEffect(() => {
+    setMissing([]);
+    if (!open || !harness) return;
+    let current = true;
+    api.missingCredentials(harness as Harness).then((keys) => {
+      if (!current) return;
+      setMissing(keys);
+      setProvider(keys[0] ?? "");
+    }, showError);
+    return () => {
+      current = false;
+    };
+  }, [api, open, harness]);
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const text = (key: string) => String(form.get(key) ?? "").trim();
+    if (missing.length && text("key")) {
+      try {
+        await api.setCredential(provider, text("key"));
+      } catch (error) {
+        return showError(error);
+      }
+    }
     const opts: CreateOpts = { network: text("network") };
     if (harness) opts.harness = harness as Harness;
     if (harness && text("task")) opts.task = text("task");
@@ -201,7 +230,7 @@ function NewSandbox({ onCreate }: { onCreate(opts: CreateOpts): void }) {
           </Button>
         </PopoverTrigger>
         <PopoverContent className="w-80">
-          <form onSubmit={submit} className="flex flex-col gap-3">
+          <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-3">
             <label className={field}>
               Harness
               <select
@@ -218,6 +247,38 @@ function NewSandbox({ onCreate }: { onCreate(opts: CreateOpts): void }) {
                 ))}
               </select>
             </label>
+            {missing.length > 0 && (
+              <div className="flex flex-col gap-1 rounded-md border border-border p-2 text-sm">
+                {missing.length > 1 && (
+                  <select
+                    aria-label="Key provider"
+                    className={input}
+                    value={provider}
+                    onChange={(e) => setProvider(e.target.value)}
+                  >
+                    {missing.map((p) => (
+                      <option key={p} value={p}>
+                        {KEY_HELP[p]?.[0] ?? p}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <label className={field}>
+                  {KEY_HELP[provider]?.[0] ?? `${provider} key`}
+                  <input
+                    name="key"
+                    type="password"
+                    autoComplete="off"
+                    placeholder="Optional: paste once, kept in your keychain"
+                    className={input}
+                  />
+                </label>
+                <p className="text-muted-foreground text-xs">
+                  {KEY_HELP[provider]?.[1]} Or leave it empty and sign in with your subscription or key in the
+                  agent's terminal.
+                </p>
+              </div>
+            )}
             <label className={field}>
               Task
               <textarea

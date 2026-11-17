@@ -38,6 +38,8 @@ function fakeApi(sandboxes: Sandbox[] = [], hypervisor: Hypervisor = { state: "o
     credentials: vi.fn(async () => ["openai"]),
     setCredential: vi.fn(async () => {}),
     removeCredential: vi.fn(async () => {}),
+    missingCredentials: vi.fn(async () => []),
+    openUrl: vi.fn(async () => {}),
     hypervisor: vi.fn(async () => hypervisor),
     enableHypervisor: vi.fn(async () => {}),
     installCli: vi.fn(async () => "Installed. Run `beambox --help` in a terminal."),
@@ -104,6 +106,52 @@ describe("home", () => {
       desktop: true,
       network: "public",
     });
+  });
+
+  it("offers a missing key in the form, stores it, then creates", async () => {
+    const api = fakeApi();
+    api.missingCredentials = vi.fn(async () => ["anthropic", "openai"]);
+    render(<App api={api} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Sandbox options" }));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Harness" }), "opencode");
+    expect(api.missingCredentials).toHaveBeenLastCalledWith("opencode");
+    // Either key works for OpenCode: pick OpenAI.
+    await userEvent.selectOptions(await screen.findByRole("combobox", { name: "Key provider" }), "openai");
+    await userEvent.type(screen.getByLabelText("OpenAI key"), "sk-proj-x");
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+    expect(api.setCredential).toHaveBeenCalledExactlyOnceWith("openai", "sk-proj-x");
+    expect(api.create).toHaveBeenCalledExactlyOnceWith({ harness: "opencode", network: "public" });
+    const stored = vi.mocked(api.setCredential).mock.invocationCallOrder[0] ?? 0;
+    expect(stored).toBeLessThan(vi.mocked(api.create).mock.invocationCallOrder[0] ?? 0);
+  });
+
+  it("creates without a key and opens the agent's terminal to sign in there", async () => {
+    const api = fakeApi([sandbox({ name: "sandbox-1", harness: "claude-code" })]);
+    api.missingCredentials = vi.fn(async () => ["anthropic"]);
+    render(<App api={api} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Sandbox options" }));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Harness" }), "claude-code");
+    await screen.findByLabelText("Anthropic key");
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+    expect(api.setCredential).not.toHaveBeenCalled();
+    expect(api.create).toHaveBeenCalledExactlyOnceWith({ harness: "claude-code", network: "public" });
+    expect(await screen.findByText("Sign in to claude-code in sandbox-1's terminal")).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: "Terminal", selected: true })).toBeInTheDocument();
+  });
+
+  it("doesn't create when storing the key fails", async () => {
+    const api = fakeApi();
+    api.missingCredentials = vi.fn(async () => ["anthropic"]);
+    api.setCredential = vi.fn(async () => {
+      throw new Error("keychain locked");
+    });
+    render(<App api={api} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Sandbox options" }));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Harness" }), "claude-code");
+    await userEvent.type(await screen.findByLabelText("Anthropic key"), "sk-ant-x");
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+    expect(await screen.findByText(/keychain locked/)).toBeInTheDocument();
+    expect(api.create).not.toHaveBeenCalled();
   });
 
   it("has no Connect an agent popover; Install the beambox command is in the header", async () => {

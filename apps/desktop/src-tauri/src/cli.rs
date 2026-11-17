@@ -233,9 +233,6 @@ pub async fn run(cli: &Cli, core: &Core, io: &mut Io<'_>) -> Result<i32> {
                 Some(folder) => Some(std::path::absolute(folder).map_err(io_err)?.to_string_lossy().into_owned()),
                 None => None,
             };
-            if let Some(h) = harness {
-                core.credential_env(crate::agent::harness(h)?)?;
-            }
             let with_desktop = *desktop || template.as_deref() == Some("desktop");
             if let Some(snapshot) = snapshot_name(harness.as_deref(), with_desktop) {
                 if !core.backend.has_snapshot(&snapshot).await? {
@@ -260,13 +257,27 @@ pub async fn run(cli: &Cli, core: &Core, io: &mut Io<'_>) -> Result<i32> {
             };
             let info = core.create(opts).await?;
             if cli.json { json(io, &info)? } else { done(io, describe(&info))? }
+            // Neither a stored key nor a saved login: the harness signs in inside the sandbox, so say where.
+            let sign_in = match harness {
+                Some(h) if !core.missing_credentials(h)?.is_empty() => Some(h),
+                _ => None,
+            };
+            if let Some(h) = sign_in {
+                writeln!(
+                    io.stderr,
+                    "No {h} key is stored, so {h} asks you to sign in. Open the sandbox's Terminal tab in the app, or \
+                     run `beambox attach {}`.",
+                    info.name
+                )
+                .map_err(io_err)?;
+            }
         }
         Command::Start { name } => {
             core.start(name).await?;
             done(io, format!("Started {name}"))?
         }
         Command::Stop { name } => {
-            core.backend.stop(name).await?;
+            core.stop(name).await?;
             done(io, format!("Stopped {name}"))?
         }
         Command::Fork { name } => {
@@ -805,16 +816,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_with_a_harness_needs_its_credential_first() {
+    async fn create_with_a_harness_says_where_to_sign_in_without_a_key() {
         let core = core();
-        let out = beambox_args(&core, &["create", "--harness", "claude-code", "--task", "fix the tests"], "").await;
-        assert!(out.code.unwrap_err().contains("beambox credentials set anthropic"));
-        assert_eq!(out.stderr, "", "nothing is prepared");
+        let out = beambox_args(&core, &["create", "signin", "--harness", "claude-code", "--task", "fix the tests"], "").await;
+        assert_eq!(out.code, Ok(0), "{}", out.stderr);
+        assert!(out.stderr.contains("asks you to sign in") && out.stderr.contains("beambox attach signin"), "{}", out.stderr);
         beambox(&core, "credentials set anthropic", "sk-ant-api03-x").await;
         let out = beambox_args(&core, &["create", "fixer", "--harness", "claude-code", "--task", "fix the tests"], "").await;
         assert_eq!(out.code, Ok(0), "{}", out.stderr);
         assert!(!out.stdout.contains("sk-ant") && !out.stderr.contains("sk-ant"), "the key is never printed");
-        assert!(out.stderr.contains("Preparing the claude-code sandbox"));
+        assert!(!out.stderr.contains("sign in"), "a stored key needs no sign-in: {}", out.stderr);
         assert_eq!(out.stdout, "fixer is running (claude-code, base)\n");
         assert!(beambox(&core, "list", "").await.stdout.lines().nth(1).unwrap().contains("claude-code"));
     }
