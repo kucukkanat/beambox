@@ -11,5 +11,6 @@
 - Hooks: Biome formats every file you edit. A Stop hook runs typecheck + tests for changed workspaces and
   sends you back if they fail (each bounce is logged for `/ship`'s metrics). Fix the cause; never weaken a test
   or skip the hook to get past it.
-- Session start installs dependencies in new worktrees, points `TURBO_CACHE_DIR` at the main checkout's
-  cache (checks passed in one worktree are cache hits in all of them), and prints the specs waiting on you.
+- Session start installs dependencies in new worktrees, points `TURBO_CACHE_DIR` and `CARGO_TARGET_DIR` at the
+  main checkout's caches (checks passed in one worktree are cache hits in all of them, and Rust dependencies
+  compile once), flags missing tools such as Rust, and prints the specs waiting on you.

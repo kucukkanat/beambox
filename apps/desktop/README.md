@@ -56,7 +56,12 @@ npm run build -w @repo/desktop        # fetch runtime, then tauri build (.dmg / 
 npm test -w @repo/desktop             # Vitest + cargo test
 npm run typecheck -w @repo/desktop    # tsc + cargo check
 npm run check:images -w @repo/desktop # build both images and enforce size limits (needs docker or podman)
+npm run -s beambox -w @repo/desktop -- list  # rebuild, then run the CLI: never a stale binary
 ```
+
+Don't run `src-tauri/target/debug/beambox` directly: it may be older than the source, and with no command
+(or a flag an old build doesn't know, like `--version`) it opens a window. In worktrees, Claude Code's session
+start points `CARGO_TARGET_DIR` at the main checkout's `src-tauri/target`, so dependencies compile once.
 
 Prerequisites for building: Node 24+, Rust (rustup, stable) and
 [Tauri's system dependencies](https://tauri.app/start/prerequisites/) (Xcode Command Line Tools on macOS;
@@ -119,6 +124,21 @@ Run on a fresh machine (macOS Apple Silicon, Ubuntu with KVM, Windows 11) for ev
 
 macOS: the app is signed with `Entitlements.plist` (`com.apple.security.hypervisor`). Check early whether a
 notarized build also needs `com.apple.security.cs.disable-library-validation` to load the bundled `libkrunfw`.
+
+## microsandbox notes
+
+Things the crate doesn't make obvious. Each cost a failed run to find; check here before debugging.
+
+- **Socket paths:** microsandbox adds ~50 bytes to `MSB_HOME` for Unix sockets, and macOS caps them at 104. A
+  `MSB_HOME` under `~/Library/Application Support/…` fails with "socket path is too long", hence `~/.beambox`.
+- **Always set all three env vars** (`MSB_HOME`, `MSB_PATH`, `MSB_LIBKRUNFW_PATH`) when calling the bundled
+  `msb` by hand. Without `MSB_HOME` it creates `~/.microsandbox`, which Beambox must never touch.
+- **Snapshot names are `<group>:<member>`.** `handle.snapshot("x")` on sandbox `s` creates `s:x`, and lookups
+  need the full name. Remove one with `msb snapshot rm s:x`.
+- **Booting from a snapshot with labels:** `Sandbox::restore` can't set labels. Use
+  `Sandbox::builder(name).override_snapshot(r)` and the builder's own `create_detached()`. Going through
+  `build()` + `Sandbox::create_detached(config)` fails with "image source is required".
+- **Real-VM tests** are `#[ignore]`d. Run them with `cargo test -- --ignored`, with the three env vars set.
 
 ## Licences
 

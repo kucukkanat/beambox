@@ -12,6 +12,7 @@
     "build:web": "vite build",
     "typecheck": "tsc -p tsconfig.json && node scripts/cargo.mjs check --all-targets",
     "test": "vitest run && node scripts/cargo.mjs test",
+    "beambox": "node scripts/beambox.mjs",
     "check:images": "node scripts/check-image-size.mjs",
     "clean": "rm -rf dist .turbo src-tauri/target"
   },

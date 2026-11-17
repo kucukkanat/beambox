@@ -35,3 +35,10 @@ windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
 
 [dev-dependencies]
 rmcp = { version = "3.10", features = ["client"] }
+
+# Faster incremental builds: line numbers in backtraces but no full debug info, and none for dependencies.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

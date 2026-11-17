@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-// SessionStart: install deps in fresh worktrees, share the Turbo cache, and print where work stands.
+// SessionStart: install deps in fresh worktrees, share the Turbo cache and Rust target dir, flag missing tools,
+// and print where work stands.
 import { execSync } from "node:child_process";
 import { appendFileSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { branch, readInput, sh, turboCacheDir } from "./lib.mjs";
+import { branch, cargoTargetDir, missingPrerequisites, readInput, sh, turboCacheDir } from "./lib.mjs";
 
 const input = await readInput();
 const root = process.env.CLAUDE_PROJECT_DIR ?? input.cwd;
@@ -15,8 +16,13 @@ if (!existsSync(join(root, "node_modules"))) {
 }
 
 if (process.env.CLAUDE_ENV_FILE) {
-  appendFileSync(process.env.CLAUDE_ENV_FILE, `export TURBO_CACHE_DIR="${turboCacheDir(root)}"\n`);
+  const target = cargoTargetDir(root);
+  const lines = [`export TURBO_CACHE_DIR="${turboCacheDir(root)}"`];
+  if (target) lines.push(`export CARGO_TARGET_DIR="${target}"`);
+  appendFileSync(process.env.CLAUDE_ENV_FILE, `${lines.join("\n")}\n`);
 }
+
+for (const line of missingPrerequisites(root)) out.push(`Missing: ${line}`);
 
 // Orientation: spec statuses and open branches.
 const specsDir = join(root, "specs");

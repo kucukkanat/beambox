@@ -3,7 +3,7 @@
 // Every bounce is logged per branch so /ship can record how much rework a feature needed.
 import { execSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
-import { branch, metricsFile, readInput, sh, turboCacheDir } from "./lib.mjs";
+import { branch, cargoTargetDir, metricsFile, readInput, sh, turboCacheDir } from "./lib.mjs";
 
 const input = await readInput();
 const root = process.env.CLAUDE_PROJECT_DIR ?? input.cwd;
@@ -23,7 +23,11 @@ try {
     cwd: root,
     stdio: "pipe",
     encoding: "utf8",
-    env: { ...process.env, TURBO_CACHE_DIR: turboCacheDir(root) },
+    env: {
+      ...process.env,
+      TURBO_CACHE_DIR: turboCacheDir(root),
+      ...(cargoTargetDir(root) && { CARGO_TARGET_DIR: cargoTargetDir(root) }),
+    },
   });
 } catch (error) {
   const log = metricsFile(root);
