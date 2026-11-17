@@ -28,7 +28,7 @@ can watch them and step in through a GUI. One download, nothing else to install.
 | `src-tauri/src/proxy.rs` | TCP→WebSocket proxy for noVNC (replaces websockify) |
 | `src-tauri/src/paths.rs`, `hypervisor.rs`, `ports.rs` | Bundled runtime paths, hypervisor check, port picking |
 | `images/base/Dockerfile` | Base template image (≤ 10 MB unpacked) |
-| `images/desktop/start-desktop` | Starts Xvfb, openbox and x11vnc in a Desktop sandbox; installed by `desktop_setup()` in `core.rs` |
+| `images/desktop/` | The Desktop template: `start-desktop` (runs after each boot), `Xresources`, `theme.sh`; built in by `desktop_setup()` in `core.rs` |
 | `scripts/` | `fetch-runtime.mjs`, `check-image-size.mjs`, `cargo.mjs` (runs cargo even if `~/.cargo/bin` isn't on PATH) |
 
 ## How it fits together
@@ -100,11 +100,15 @@ doesn't wait for GUI-subsystem programs, so output can land after the next promp
 - **Base** is `alpine:3.22`. `images/base` is checked with `npm run check:images` (docker or podman); release CI can
   push it to GHCR and pin `TEMPLATES` (`core.rs`) to its `@sha256:` digest.
 - **Desktop** needs no registry and no Docker. The first Desktop sandbox builds it locally (`Core::desktop_snapshot`):
-  boot `alpine:3.22` as the hidden sandbox `beambox-build-desktop`, run `desktop_setup()` (apk add xvfb, x11vnc,
-  openbox, xterm, xsetroot, fonts, plus `start-desktop`), stop it, save the disk snapshot `beambox-build-desktop:beambox-desktop-2`,
-  and delete the build sandbox. That takes ~10 s once. Every Desktop sandbox after that boots from the snapshot in
-  ~1 s, and the app runs `start-desktop` after each boot. Bump `DESKTOP_MEMBER` when `desktop_setup()` changes.
-  Installed size is ~327 MiB (Mesa comes in with Xvfb), over the spec's 120 MB target.
+  boot `alpine:3.22` as the hidden sandbox `beambox-build-desktop`, run `desktop_setup()`, stop it, save the disk
+  snapshot `beambox-build-desktop:beambox-desktop-3`, and delete the build sandbox. That takes ~10 s once. Every
+  Desktop sandbox after that boots from the snapshot in ~2 s, and the app runs `start-desktop` after each boot.
+  Bump `DESKTOP_MEMBER` when anything in `images/desktop/` or `desktop_setup()` changes.
+- **What's in it** (`images/desktop/`): TigerVNC's `Xvnc`, which is the X server and the VNC server in one. It
+  resizes to the Desktop tab instead of being stretched, and sends changes as they're drawn. Also openbox with
+  the dark Onyx theme, a `tint2` panel (terminal launcher and open windows) and xterm in DejaVu Sans Mono
+  (`Xresources`). `theme.sh` applies the settings. `vncconfig` relays text copied in the sandbox to the host's
+  clipboard. Installed size is ~382 MiB (Mesa comes in with the X server), over the spec's 120 MB target.
 - `cargo test real_desktop -- --ignored` checks this against real microVMs. It needs `MSB_PATH`,
   `MSB_LIBKRUNFW_PATH` and `MSB_HOME` pointing at `src-tauri/binaries/` and `~/.beambox`.
 

@@ -5,5 +5,6 @@ declare module "@novnc/novnc" {
     resizeSession: boolean;
     disconnect(): void;
     addEventListener(type: "connect" | "disconnect", listener: () => void): void;
+    addEventListener(type: "clipboard", listener: (event: CustomEvent<{ text: string }>) => void): void;
   }
 }

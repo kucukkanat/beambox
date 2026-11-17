@@ -193,7 +193,7 @@ function NewSandbox({ onCreate }: { onCreate(opts: CreateOpts): void }) {
               Template
               <select name="template" className={input}>
                 <option value="base">Base (Alpine, 256 MiB)</option>
-                <option value="desktop">Desktop (Xvfb + VNC, 512 MiB)</option>
+                <option value="desktop">Desktop (VNC, 512 MiB)</option>
               </select>
             </label>
             <label className={field}>

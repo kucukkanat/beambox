@@ -1,0 +1,11 @@
+! xterm in the Beambox desktop: a readable font and a dark theme. Read through $XENVIRONMENT.
+XTerm*faceName: DejaVu Sans Mono
+XTerm*faceSize: 11
+XTerm*background: #161b22
+XTerm*foreground: #e6edf3
+XTerm*cursorColor: #58a6ff
+XTerm*internalBorder: 10
+XTerm*scrollBar: false
+XTerm*saveLines: 5000
+XTerm*selectToClipboard: true
+XTerm*title: Terminal

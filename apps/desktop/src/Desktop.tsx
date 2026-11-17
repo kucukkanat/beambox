@@ -8,7 +8,10 @@ const LABELS = {
   disconnected: "The desktop disconnected.",
 } as const;
 
-/** The sandbox's X desktop: noVNC through the app's local TCP→WebSocket proxy. */
+/**
+ * The sandbox's X desktop: noVNC through the app's local TCP→WebSocket proxy. Xvnc resizes its screen to this
+ * element (`resizeSession`), so it's drawn 1:1 instead of stretched.
+ */
 export function Desktop({ api, name }: { api: Api; name: string }) {
   const ref = useRef<HTMLDivElement>(null);
   // A blank canvas looks the same whether it's connecting, connected or broken, so say which.
@@ -25,6 +28,11 @@ export function Desktop({ api, name }: { api: Api; name: string }) {
         rfb.resizeSession = true;
         rfb.addEventListener("connect", () => setState("connected"));
         rfb.addEventListener("disconnect", () => !closed && setState("disconnected"));
+        // Text copied in the sandbox (vncconfig relays it) lands on this computer's clipboard.
+        rfb.addEventListener(
+          "clipboard",
+          (event) => void navigator.clipboard.writeText(event.detail.text).catch(() => {}),
+        );
       },
       (error) => {
         setState("disconnected");

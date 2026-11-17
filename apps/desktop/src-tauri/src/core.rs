@@ -19,16 +19,20 @@ pub const VNC_PORT: u16 = 5900;
 pub const BUILD_PREFIX: &str = "beambox-build-";
 const DESKTOP_BUILDER: &str = "beambox-build-desktop";
 /// Bump the suffix whenever `desktop_setup()` changes, so existing installs build the new desktop.
-const DESKTOP_MEMBER: &str = "beambox-desktop-2";
+const DESKTOP_MEMBER: &str = "beambox-desktop-3";
 /// microsandbox names snapshots `<group>:<member>`, and the group is the source sandbox's name.
-pub const DESKTOP_SNAPSHOT: &str = "beambox-build-desktop:beambox-desktop-2";
+pub const DESKTOP_SNAPSHOT: &str = "beambox-build-desktop:beambox-desktop-3";
 
-/// Shell script that turns plain Alpine into the desktop template.
+/// Shell script that turns plain Alpine into the desktop template: TigerVNC's Xvnc (X server and VNC server in
+/// one), openbox with a dark theme, the tint2 panel and xterm.
 pub fn desktop_setup() -> String {
-    let start = include_str!("../../images/desktop/start-desktop");
+    let file = |path: &str, body: &str| format!("mkdir -p \"$(dirname {path})\"\ncat > {path} <<'EOF'\n{body}EOF\n");
     format!(
-        "set -e\napk add --no-cache xvfb x11vnc openbox xterm xsetroot font-dejavu\n\
-         cat > /usr/local/bin/start-desktop <<'EOF'\n{start}EOF\nchmod +x /usr/local/bin/start-desktop\n"
+        "set -e\napk add --no-cache tigervnc openbox tint2 xterm xsetroot font-dejavu\n{}{}{}\
+         chmod +x /usr/local/bin/start-desktop\n",
+        file("/usr/local/bin/start-desktop", include_str!("../../images/desktop/start-desktop")),
+        file("/etc/beambox/Xresources", include_str!("../../images/desktop/Xresources")),
+        include_str!("../../images/desktop/theme.sh"),
     )
 }
 
@@ -348,10 +352,14 @@ mod tests {
     #[test]
     fn desktop_setup_installs_the_start_script() {
         let script = desktop_setup();
-        assert!(script.starts_with("set -e\napk add --no-cache xvfb x11vnc openbox"));
+        assert!(script.starts_with("set -e\napk add --no-cache tigervnc openbox tint2"));
         assert!(script.contains("cat > /usr/local/bin/start-desktop <<'EOF'\n#!/bin/sh\n"));
-        assert!(script.contains("x11vnc -display :0 -rfbport 5900"));
-        assert!(script.ends_with("EOF\nchmod +x /usr/local/bin/start-desktop\n"));
+        assert!(script.contains("Xvnc :0 -geometry 1280x800"));
+        assert!(script.contains("cat > /etc/beambox/Xresources <<'EOF'\n"));
+        assert!(script.contains("<name>Onyx</name>"));
+        assert!(script.ends_with("chmod +x /usr/local/bin/start-desktop\n"));
+        // Every embedded file ends in a newline, so its EOF marker stands on a line of its own.
+        assert_eq!(script.matches("\nEOF\n").count(), 2);
     }
 
     #[tokio::test]

@@ -39,7 +39,7 @@ fn info(handle: &SandboxHandle) -> Result<SandboxInfo> {
     })
 }
 
-/// The desktop image ships a script that starts Xvfb, openbox and x11vnc in the background.
+/// The desktop image ships a script that starts Xvnc, openbox, tint2 and a terminal in the background.
 async fn after_boot(sandbox: &Sandbox, template: &str) -> Result<()> {
     if template == "desktop" {
         sandbox.shell("start-desktop").await.map_err(err)?;
@@ -173,11 +173,11 @@ mod tests {
             let _ = core.backend.delete(name).await;
             let info = core.create(opts(name), Some("it".into())).await.unwrap();
             assert_eq!((info.template.as_str(), info.agent.as_deref()), ("desktop", Some("it")));
-            let out = core.backend.exec(name, "sleep 1; pgrep x11vnc >/dev/null && which Xvfb openbox").await.unwrap();
+            let out = core.backend.exec(name, "pgrep Xvnc >/dev/null && pgrep tint2 >/dev/null && which openbox").await.unwrap();
             assert_eq!(out.exit_code, 0, "{out:?}");
         }
         // A restarted or forked desktop keeps the old X lock on disk; its desktop must still come up.
-        let running = "pgrep Xvfb >/dev/null && pgrep openbox >/dev/null && netstat -ltn | grep -q ':5900 '";
+        let running = "pgrep Xvnc >/dev/null && pgrep openbox >/dev/null && netstat -ltn | grep -q ':5900 '";
         core.backend.stop("it-desktop-1").await.unwrap();
         core.backend.start("it-desktop-1").await.unwrap();
         let fork = core.fork("it-desktop-2").await.unwrap();
