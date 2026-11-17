@@ -1,0 +1,23 @@
+{
+  "name": "@repo/__NAME__",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "__DESCRIPTION__",
+  "exports": {
+    ".": {
+      "@repo/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --conditions=@repo/source --test \"src/**/*.test.ts\"",
+    "clean": "rm -rf dist .turbo"
+  }
+}
