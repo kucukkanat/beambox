@@ -125,6 +125,10 @@ pub mod fake {
     #[async_trait]
     impl SandboxBackend for FakeBackend {
         async fn create(&self, spec: Spec) -> Result<SandboxInfo> {
+            // Like microsandbox: a name is taken until its sandbox is deleted.
+            if self.sandboxes.lock().unwrap().contains_key(&spec.name) {
+                return Err(format!("sandbox {} already exists", spec.name));
+            }
             // Like a real boot, give other tasks a turn, so concurrent creates really interleave.
             tokio::task::yield_now().await;
             if let Some(snapshot) = &spec.snapshot {

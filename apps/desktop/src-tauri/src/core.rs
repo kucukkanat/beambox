@@ -73,6 +73,9 @@ pub struct Core {
     /// Holds `snapshot-build.lock`, which serialises snapshot builds across the app and CLI processes, so
     /// concurrent creates build each snapshot once, and `logins/<harness>`, each harness's latest sign-in.
     lock_dir: PathBuf,
+    /// Picking a free name and ports and creating the sandbox happen one create at a time, so two creates never
+    /// pick the same ones.
+    creating: tokio::sync::Mutex<()>,
 }
 
 impl Core {
@@ -82,7 +85,7 @@ impl Core {
     }
 
     pub fn with_port_probe(backend: Arc<dyn SandboxBackend>, secrets: Arc<dyn Secrets>, probe: fn(u16) -> bool) -> Self {
-        Self { backend, secrets, is_port_free: probe, lock_dir: std::env::temp_dir() }
+        Self { backend, secrets, is_port_free: probe, lock_dir: std::env::temp_dir(), creating: Default::default() }
     }
 
     /// The harness's credential as `(variable, value)`, or which key is missing.
@@ -120,15 +123,17 @@ impl Core {
         if harness.is_some() {
             (image, memory) = (agent::IMAGE, if desktop { 4096 } else { 2048 });
         }
+        // The snapshot first: building one can take minutes, and other creates finish meanwhile.
+        let snapshot = match snapshot_key(harness.map(|h| h.name), desktop) {
+            Some(_) => Some(self.snapshot_for(harness, desktop).await?),
+            None => None,
+        };
+        let creating = self.creating.lock().await;
         let name = match opts.name {
             Some(name) => name,
             None => self.free_name("sandbox").await?,
         };
         let ports = self.pick_ports(default_ports.iter().copied().chain(opts.ports.unwrap_or_default())).await?;
-        let snapshot = match snapshot_key(harness.map(|h| h.name), desktop) {
-            Some(_) => Some(self.snapshot_for(harness, desktop).await?),
-            None => None,
-        };
         let spec = Spec {
             name,
             template,
@@ -142,6 +147,7 @@ impl Core {
             snapshot,
         };
         let info = self.backend.create(spec).await?;
+        drop(creating);
         if let Some(h) = harness {
             // Signed in once already? Reuse that login, unless a stored key is used instead.
             if env.is_none() {
@@ -401,6 +407,18 @@ mod tests {
     }
 
     const CLAUDE_LOGIN: &str = "/root/.claude/.credentials.json";
+
+    #[tokio::test]
+    async fn creates_waiting_on_snapshot_builds_still_get_their_own_names_and_ports() {
+        let fake = Arc::new(FakeBackend::default());
+        let (core, _dir) = core_in_fresh_dir(fake.clone(), Arc::new(FakeSecrets::default()));
+        let desktop = |h: &str| CreateOpts { harness: Some(h.into()), desktop: Some(true), ..Default::default() };
+        // Both build their snapshot first; neither sandbox exists while the other picks its name and port.
+        let (a, b) = tokio::join!(core.create(desktop("opencode")), core.create(desktop("codex")));
+        let (a, b) = (a.unwrap(), b.unwrap());
+        assert_ne!(a.name, b.name);
+        assert_ne!(a.ports[0].host, b.ports[0].host);
+    }
 
     #[tokio::test]
     async fn signing_in_once_signs_in_every_new_sandbox_of_that_harness() {
