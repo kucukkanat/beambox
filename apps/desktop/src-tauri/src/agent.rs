@@ -12,8 +12,9 @@ pub const IMAGE: &str = "debian:trixie-slim";
 
 pub struct Harness {
     pub name: &'static str,
-    /// npm package with the harness's CLI.
+    /// npm package with the harness's CLI, and the command it installs.
     package: &'static str,
+    bin: &'static str,
     /// Credentials it can use, in order of preference.
     pub credentials: &'static [&'static str],
     /// Where it keeps its sign-in (subscription or key) after you log in inside the sandbox.
@@ -32,6 +33,7 @@ pub const HARNESSES: &[Harness] = &[
     Harness {
         name: "claude-code",
         package: "@anthropic-ai/claude-code",
+        bin: "claude",
         credentials: &["anthropic"],
         login_path: "/root/.claude/.credentials.json",
         sign_in: Some("claude auth status >/dev/null 2>&1 || claude auth login"),
@@ -47,6 +49,7 @@ pub const HARNESSES: &[Harness] = &[
     Harness {
         name: "codex",
         package: "@openai/codex",
+        bin: "codex",
         credentials: &["openai"],
         login_path: "/root/.codex/auth.json",
         // Device code: the browser step needs no callback into the sandbox.
@@ -58,6 +61,7 @@ pub const HARNESSES: &[Harness] = &[
     Harness {
         name: "opencode",
         package: "opencode-ai",
+        bin: "opencode",
         credentials: &["anthropic", "openai"],
         login_path: "/root/.local/share/opencode/auth.json",
         sign_in: None,
@@ -144,6 +148,20 @@ pub fn desktop_setup() -> String {
     format!("set -e\napk add --no-cache tigervnc openbox tint2 xterm xsetroot font-dejavu\n{}", desktop_files())
 }
 
+/// Install the harness and check that it runs. npm skips a platform binary it can't fetch without failing (a new
+/// release published before its arm64 binary did that to Codex), so a snapshot could keep a harness that never
+/// starts. Retry a few times, then fail the build instead.
+fn install_harness(harness: &Harness) -> String {
+    let (package, bin) = (harness.package, harness.bin);
+    format!(
+        "for try in 1 2 3; do\n\
+         \x20 if npm install -g {package} && {bin} --version >/dev/null 2>&1; then break; fi\n\
+         \x20 if [ \"$try\" = 3 ]; then echo \"{bin} doesn't run after installing {package}\" >&2; false; fi\n\
+         \x20 sleep 20\n\
+         done\n"
+    )
+}
+
 /// Shell script that turns `debian:trixie-slim` into an agent snapshot: Node 24, the harness, tmux and git, and
 /// optionally the same desktop as `desktop_setup` plus Chrome (x86-64) or Chromium (arm64). `mcp.js` and the
 /// harness's MCP config are written as files afterwards.
@@ -153,9 +171,9 @@ pub fn agent_setup(harness: &Harness, desktop: bool) -> String {
         "set -e\nexport DEBIAN_FRONTEND=noninteractive\napt-get update\n\
          {apt} ca-certificates curl gnupg git tmux procps\n\
          curl -fsSL https://deb.nodesource.com/setup_24.x | bash -\n{apt} nodejs\n\
-         npm install -g {}\nmkdir -p /workspace /opt/beambox /etc/beambox \"$(dirname {})\"\n\
+         {}mkdir -p /workspace /opt/beambox /etc/beambox \"$(dirname {})\"\n\
          echo 'set -g allow-passthrough all' >> /etc/tmux.conf\n{}chmod +x {OPEN_PATH}\n",
-        harness.package,
+        install_harness(harness),
         harness.config_path,
         file(OPEN_PATH, include_str!("../../images/agent/beambox-open")),
     );
@@ -240,6 +258,15 @@ mod tests {
         assert!(start("opencode").contains("-e BROWSER=/usr/local/bin/beambox-open 'opencode --prompt go;"));
         // With a stored key there's nothing to sign in to.
         assert!(!harness("claude-code").unwrap().start_command(None, false).contains("auth"));
+    }
+
+    #[test]
+    fn a_snapshot_build_fails_rather_than_keep_a_harness_that_doesnt_run() {
+        for (h, bin) in [("claude-code", "claude"), ("codex", "codex"), ("opencode", "opencode")] {
+            let setup = agent_setup(harness(h).unwrap(), false);
+            assert!(setup.contains(&format!("&& {bin} --version >/dev/null 2>&1; then break; fi")), "{h}");
+            assert!(setup.contains(&format!("{bin} doesn't run after installing")), "{h}");
+        }
     }
 
     #[test]

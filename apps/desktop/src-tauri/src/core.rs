@@ -27,7 +27,7 @@ pub fn snapshot_key(harness: Option<&str>, desktop: bool) -> Option<(String, Str
         (None, true) => Some(("beambox-build-desktop".into(), "beambox-desktop-3".into())),
         (Some(h), d) => {
             let key = if d { format!("{h}-desktop") } else { h.to_string() };
-            Some((format!("{BUILD_PREFIX}{key}"), format!("beambox-{key}-3")))
+            Some((format!("{BUILD_PREFIX}{key}"), format!("beambox-{key}-4")))
         }
     }
 }
@@ -530,7 +530,7 @@ mod tests {
         let info = core.create(agent("fix the tests")).await.unwrap();
         assert_eq!(info.harness.as_deref(), Some("claude-code"));
         let spec = fake.specs.lock().unwrap().last().unwrap().clone();
-        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-claude-code:beambox-claude-code-3"));
+        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-claude-code:beambox-claude-code-4"));
         assert_eq!((spec.image.as_str(), spec.cpus, spec.memory_mib), ("debian:trixie-slim", 2, 2048));
         assert_eq!(spec.harness.as_deref(), Some("claude-code"));
         let execs = fake.execs.lock().unwrap().clone();
@@ -609,7 +609,7 @@ mod tests {
         let info = core.create(opts).await.unwrap();
         assert_eq!((info.template.as_str(), info.memory_mib), ("desktop", 4096));
         let spec = fake.specs.lock().unwrap().last().unwrap().clone();
-        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-3"));
+        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-4"));
     }
 
     #[tokio::test]
@@ -634,7 +634,7 @@ mod tests {
         let specs = fake.specs.lock().unwrap().clone();
         let snapshot = |name: &str| specs.iter().find(|s| s.name == name).unwrap().snapshot.clone().unwrap();
         assert_eq!(snapshot("a"), snapshot("b"));
-        assert_eq!(snapshot("c"), "beambox-build-codex-desktop:beambox-codex-desktop-3");
+        assert_eq!(snapshot("c"), "beambox-build-codex-desktop:beambox-codex-desktop-4");
         assert_eq!(snapshot("e"), "beambox-build-desktop:beambox-desktop-3");
         let c = specs.iter().find(|s| s.name == "c").unwrap();
         assert_eq!((c.memory_mib, c.ports.len(), c.template.as_str()), (4096, 1, "desktop"));
@@ -645,7 +645,7 @@ mod tests {
     #[test]
     fn snapshot_names_are_group_and_member() {
         assert_eq!(snapshot_name(None, false), None);
-        assert_eq!(snapshot_name(Some("opencode"), true).unwrap(), "beambox-build-opencode-desktop:beambox-opencode-desktop-3");
+        assert_eq!(snapshot_name(Some("opencode"), true).unwrap(), "beambox-build-opencode-desktop:beambox-opencode-desktop-4");
         for (h, d) in [(None, true), (Some("codex"), false)] {
             assert!(snapshot_key(h, d).unwrap().0.starts_with(BUILD_PREFIX));
         }
