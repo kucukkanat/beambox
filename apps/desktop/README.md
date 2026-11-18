@@ -121,6 +121,32 @@ Prerequisites for building: Node 24+, Rust (rustup, stable) and
 [Tauri's system dependencies](https://tauri.app/start/prerequisites/) (Xcode Command Line Tools on macOS;
 WebKitGTK etc. on Linux; WebView2 + MSVC on Windows). No environment variables are needed.
 
+## Releasing for macOS
+
+`.github/workflows/desktop-app.yml` builds the app on a GitHub macOS runner for Apple Silicon only, because the
+microsandbox runtime ships for arm64 only on macOS. It signs the app with a Developer ID, notarizes and staples it, and
+then checks it with `spctl`. Run it by hand (Actions → desktop-app → Run workflow) to get the `.dmg` as a workflow
+artifact, or push a tag to get a draft release with the `.dmg` attached:
+
+```bash
+git tag app-v0.1.0 && git push origin app-v0.1.0   # keep it in step with "version" in tauri.conf.json
+```
+
+Tauri signs the app and the `msb` sidecar with `Entitlements.plist`, and the workflow checks that `msb` kept the
+hypervisor entitlement it needs to run microVMs. Tauri copies resources as they are, though, so the workflow signs
+`libkrunfw` itself before bundling: notarization rejects a bundle with any unsigned binary in it.
+
+Repository secrets (Settings → Secrets and variables → Actions), all from an Apple Developer Program account:
+
+| Secret | What it is |
+| --- | --- |
+| `APPLE_CERTIFICATE` | A **Developer ID Application** certificate and its private key, exported from Keychain Access as `.p12`, then `base64 -i cert.p12 \| pbcopy` |
+| `APPLE_CERTIFICATE_PASSWORD` | The password you set on that `.p12` export |
+| `APPLE_SIGNING_IDENTITY` | The certificate's name, e.g. `Developer ID Application: Jane Doe (TEAMID1234)` (`security find-identity -v -p codesigning`) |
+| `APPLE_ID` | The Apple ID email of the developer account |
+| `APPLE_PASSWORD` | An app-specific password for that Apple ID (account.apple.com → Sign-In and Security) |
+| `APPLE_TEAM_ID` | The 10-character team ID (developer.apple.com → Membership) |
+
 ## Command line
 
 **Install the beambox command** (in the header's ⋯ menu) puts `beambox` on the PATH: a two-line launcher in

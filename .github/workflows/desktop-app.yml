@@ -1,0 +1,89 @@
+# The Beambox desktop app (apps/desktop) for macOS on Apple Silicon: built, signed with a Developer ID, notarized and
+# stapled. A `app-v<version>` tag attaches the .dmg to a draft GitHub release; a manual run keeps it as a workflow
+# artifact. Secrets and setup: apps/desktop/README.md#releasing-for-macos.
+name: desktop-app
+
+on:
+  push:
+    tags: ["app-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      - run: npm ci
+
+      # A throwaway keychain holding the Developer ID certificate, so the runtime library can be signed before
+      # Tauri bundles it (Tauri signs the app and the msb sidecar itself, but copies resources as they are).
+      - name: Import the signing certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password=$(uuidgen)
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+          security find-identity -v -p codesigning "$keychain" | grep -F "$APPLE_SIGNING_IDENTITY"
+
+      - name: Fetch and sign the microsandbox runtime
+        working-directory: apps/desktop
+        run: |
+          node scripts/fetch-runtime.mjs
+          codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" src-tauri/binaries/runtime/*.dylib
+
+      - name: Build, sign and notarize
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npm run build -w @repo/desktop -- --bundles app,dmg
+
+      # msb runs the microVMs, so it must keep the hypervisor entitlement after Tauri re-signs it.
+      - name: Verify
+        working-directory: apps/desktop/src-tauri/target/release/bundle
+        run: |
+          app=macos/Beambox.app
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -d --entitlements - "$app/Contents/MacOS/msb" | grep -q com.apple.security.hypervisor
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose "$app"
+          ls dmg/*.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beambox-macos
+          path: apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+      - name: Draft a release
+        if: startsWith(github.ref, 'refs/tags/app-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --draft --generate-notes apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
+
+      - name: Remove the keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
