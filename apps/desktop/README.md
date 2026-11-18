@@ -58,7 +58,8 @@ Beambox desktop: a Tauri 2 app that gives each AI agent its own computer, a micr
   origin, so other pages on the machine can't reach the VNC server. The Resolution menu in its top-right corner
   picks **Fit window** (the screen follows the tab, drawn 1:1) or a fixed size from Xvnc's list (`xrandr -s` through
   the `desktop_resize` command), scaled down to fit so everything looks smaller. The choice is kept, and applied
-  again on every connect.
+  again on every connect. The screen fills the window under the box's header (Save points are a scroll below), and
+  **Full window** (or ⌘⇧F, caught before the box sees it) hides everything else; Esc or ⌘⇧F brings it back.
 
 ## Layout
 

@@ -61,6 +61,8 @@ const PATHS: Record<string, ReactNode> = {
     </>
   ),
   close: <path d="M6 6l12 12M18 6L6 18" />,
+  expand: <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />,
+  shrink: <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" />,
   more: <path d="M5 12h.01M12 12h.01M19 12h.01" strokeWidth="3" />,
   restart: <path d="M4 12a8 8 0 1 0 2.3-5.6M4 4v4h4" />,
 };

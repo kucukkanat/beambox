@@ -48,6 +48,8 @@ export function BoxView({
   const hasScreen = s.template === "desktop";
   const [mode, setMode] = useState<Mode>(initialMode ?? (hasScreen ? "screen" : "terminal"));
   const [handBack, setHandBack] = useState(false);
+  /** The screen covers the whole window, with no header, mode buttons or tools. */
+  const [full, setFull] = useState(false);
   const helper = HELPERS[helperOf(s)];
   const running = s.status === "running";
   const driving = state === "driving";
@@ -60,11 +62,23 @@ export function BoxView({
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented || handBack || typing(event.target)) return;
-      onBack();
+      if (full) setFull(false);
+      else onBack();
+    };
+    // ⌘⇧F toggles the full window. Caught before noVNC or the terminal sees it, so it never reaches the box.
+    const onToggle = (event: KeyboardEvent) => {
+      if (!(event.metaKey && event.shiftKey && event.key.toLowerCase() === "f")) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setFull((f) => !f);
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [handBack, onBack]);
+    window.addEventListener("keydown", onToggle, true);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keydown", onToggle, true);
+    };
+  }, [full, handBack, onBack]);
 
   const modes = (
     [
@@ -77,69 +91,95 @@ export function BoxView({
   const off = <p className="empty-screen">Wake the box to use this.</p>;
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-[18px]">
-      <header className="d-head">
-        <Button aria-label="Back to the shelf" onClick={onBack}>
-          <Icon name="back" /> Shelf <kbd>Esc</kbd>
-        </Button>
-        <div className="d-title">
-          <h1 className="flex items-center gap-2.5">
-            <Led state={state} />
-            {s.name}
-          </h1>
-          <p>
-            <span className="mono">{WORD[state]}</span> · {helper.name} · {s.cpus} CPU ·{" "}
-            {Math.round(s.memoryMib / 1024)} GB
-          </p>
-          {s.mount && <Folder path={s.mount} />}
-        </div>
-        {s.harness && state !== "agent-stopped" && (
-          <Lever
-            on={driving}
-            disabled={!running}
-            onToggle={() => (driving ? setHandBack(true) : onTakeover(true))}
-          />
-        )}
-      </header>
-      <section className={cn("panel flex min-h-[60vh] flex-col gap-3.5", rewinding && "rewinding")}>
-        <fieldset className="dial" aria-label="What the screen shows">
-          {modes.map(([id, label, icon]) => (
-            <Button key={id} aria-pressed={mode === id} onClick={() => setMode(id)}>
-              <Icon name={icon} size={16} />
-              {label}
-            </Button>
-          ))}
-        </fieldset>
-        <Screen state={state} big>
-          {mode === "screen" && (running ? <Desktop api={api} name={s.name} /> : off)}
-          {mode === "terminal" &&
-            (running ? (
-              <div className="size-full p-2">
-                <Terminal api={api} name={s.name} />
-              </div>
-            ) : (
-              off
-            ))}
-          {mode === "files" && (running ? <Files api={api} name={s.name} start="/workspace" /> : off)}
-          {mode === "previews" && <Ports sandbox={s} onScreen={() => setMode("screen")} />}
-        </Screen>
-        <div className="status-strip">
-          <span className="mono dim">
-            {driving
-              ? "Your keyboard and mouse go to the box. The agent waits."
-              : s.harness
-                ? `${WORD[state]} · ${helper.name}`
-                : "Your own computer in a box"}
-          </span>
-          <div className="lifecycle">
-            {state === "agent-stopped" && (
-              <Button variant="accent" onClick={() => actions.restartAgent(s.name)}>
-                <Icon name="restart" size={16} /> Start agent again
-              </Button>
-            )}
-            <Tools box={{ sandbox: s, state }} actions={actions} className="lifecycle" />
+      {/* The header and the screen fill the window's height; Save points are below, a scroll away. */}
+      <div className="flex h-[calc(100dvh-20px)] min-h-[520px] flex-col gap-[18px]">
+        <header className="d-head">
+          <Button aria-label="Back to the shelf" onClick={onBack}>
+            <Icon name="back" /> Shelf <kbd>Esc</kbd>
+          </Button>
+          <div className="d-title">
+            <h1 className="flex items-center gap-2.5">
+              <Led state={state} />
+              {s.name}
+            </h1>
+            <p>
+              <span className="mono">{WORD[state]}</span> · {helper.name} · {s.cpus} CPU ·{" "}
+              {Math.round(s.memoryMib / 1024)} GB
+            </p>
+            {s.mount && <Folder path={s.mount} />}
           </div>
-        </div>
-      </section>
+          {s.harness && state !== "agent-stopped" && (
+            <Lever
+              on={driving}
+              disabled={!running}
+              onToggle={() => (driving ? setHandBack(true) : onTakeover(true))}
+            />
+          )}
+        </header>
+        <section
+          className={cn(
+            "panel flex min-h-0 flex-1 flex-col gap-3.5",
+            rewinding && "rewinding",
+            full && "full-window",
+          )}
+        >
+          {full ? (
+            <Button
+              className="exit-full"
+              aria-label="Exit full window"
+              title="Exit full window (⌘⇧F)"
+              onClick={() => setFull(false)}
+            >
+              <Icon name="shrink" size={16} />
+            </Button>
+          ) : (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <fieldset className="dial" aria-label="What the screen shows">
+                {modes.map(([id, label, icon]) => (
+                  <Button key={id} aria-pressed={mode === id} onClick={() => setMode(id)}>
+                    <Icon name={icon} size={16} />
+                    {label}
+                  </Button>
+                ))}
+              </fieldset>
+              <Button title="Full window (⌘⇧F)" onClick={() => setFull(true)}>
+                <Icon name="expand" size={16} />
+                Full window
+              </Button>
+            </div>
+          )}
+          <Screen state={state} big>
+            {mode === "screen" && (running ? <Desktop api={api} name={s.name} /> : off)}
+            {mode === "terminal" &&
+              (running ? (
+                <div className="size-full p-2">
+                  <Terminal api={api} name={s.name} />
+                </div>
+              ) : (
+                off
+              ))}
+            {mode === "files" && (running ? <Files api={api} name={s.name} start="/workspace" /> : off)}
+            {mode === "previews" && <Ports sandbox={s} onScreen={() => setMode("screen")} />}
+          </Screen>
+          <div className="status-strip" hidden={full}>
+            <span className="mono dim">
+              {driving
+                ? "Your keyboard and mouse go to the box. The agent waits."
+                : s.harness
+                  ? `${WORD[state]} · ${helper.name}`
+                  : "Your own computer in a box"}
+            </span>
+            <div className="lifecycle">
+              {state === "agent-stopped" && (
+                <Button variant="accent" onClick={() => actions.restartAgent(s.name)}>
+                  <Icon name="restart" size={16} /> Start agent again
+                </Button>
+              )}
+              <Tools box={{ sandbox: s, state }} actions={actions} className="lifecycle" />
+            </div>
+          </div>
+        </section>
+      </div>
       <SavePoints
         api={api}
         name={s.name}

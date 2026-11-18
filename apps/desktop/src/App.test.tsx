@@ -554,6 +554,20 @@ describe("box view", () => {
     expect(mode("Screen")).toBeInTheDocument();
   });
 
+  it("fills the window with the screen, and leaves it on Esc or ⌘⇧F without leaving the box", async () => {
+    await open(fakeApi([sandbox({ template: "desktop", ports: [{ guest: 5900, host: 5901 }] })]));
+    await userEvent.click(screen.getByRole("button", { name: "Full window" }));
+    expect(screen.queryByRole("button", { name: "Screen" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Exit full window" })).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    expect(mode("Screen")).toBeInTheDocument();
+    await userEvent.keyboard("{Meta>}{Shift>}f{/Shift}{/Meta}");
+    expect(screen.getByRole("button", { name: "Exit full window" })).toBeInTheDocument();
+    await userEvent.keyboard("{Meta>}{Shift>}f{/Shift}{/Meta}");
+    expect(screen.getByRole("heading", { name: "a" })).toBeInTheDocument();
+    expect(mode("Screen")).toBeInTheDocument();
+  });
+
   it("flips the lever to take over, and hands back with a note typed to the agent", async () => {
     const api = fakeApi([sandbox({ harness: "claude-code" })]);
     // tmux attaches and redraws before the note is typed.

@@ -634,6 +634,25 @@ body {
     linear-gradient(160deg, rgba(255, 255, 255, 0.09), transparent 38%),
     repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.025) 0 1px, transparent 1px 3px);
 }
+.panel.full-window {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  padding: 6px;
+  border-radius: 0;
+}
+.exit-full {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 10;
+  opacity: 0.6;
+  transition: opacity 0.15s;
+}
+.exit-full:hover,
+.exit-full:focus-visible {
+  opacity: 1;
+}
 .screen.big .glass {
   display: none;
 }

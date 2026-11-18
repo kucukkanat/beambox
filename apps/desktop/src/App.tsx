@@ -5,7 +5,7 @@ import type { AgentStatus, Api, CreateOpts, Harness, Sandbox, Status } from "./a
 import { BoxView, type Mode } from "./BoxView.tsx";
 import { boxState, needsYou } from "./box.ts";
 import { HypervisorCard } from "./HypervisorCard.tsx";
-import { showError, typing } from "./lib/utils.ts";
+import { cn, showError, typing } from "./lib/utils.ts";
 import { spring, useReducedMotion } from "./motion.ts";
 import { NewBoxSheet } from "./NewBoxSheet.tsx";
 import { type Pending, Shelf } from "./Shelf.tsx";
@@ -282,7 +282,13 @@ export function App({ api }: { api: Api }) {
       reducedMotion={reduced ? "always" : "never"}
       transition={reduced ? { duration: 0 } : spring}
     >
-      <main className="mx-auto flex min-h-screen max-w-[1320px] flex-col gap-[22px] px-4 pt-5 pb-16">
+      {/* A box's screen uses the window's whole width; the shelf stays at a readable width. */}
+      <main
+        className={cn(
+          "mx-auto flex min-h-screen flex-col gap-[22px] px-4 pt-5 pb-16",
+          box ? "max-w-none" : "max-w-[1320px]",
+        )}
+      >
         <HypervisorCard api={api} />
         {box ? (
           <BoxView
