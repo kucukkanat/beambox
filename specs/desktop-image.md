@@ -35,8 +35,7 @@ Desktop sandbox spends ~1.5 min installing packages from Debian on the user's ma
     non-black. That reuses the frame grabber, checked in as `scripts/vnc-frame.mjs`.
   - It pushes by digest and merges a multi-arch manifest to `ghcr.io/OWNER/beambox-desktop:<version>` and
     `:latest`.
-  - It runs on tags `desktop-v<version>` and on pull requests that touch `images/desktop/`. Pull requests build
-    and smoke-test without pushing.
+  - It runs only on tags `desktop-v<version>` (changed 2026-11-18: pull requests no longer build it).
   - It publishes with the built-in `GITHUB_TOKEN`, and the package is set to public.
 - **Beambox pulls it.**
   - The Desktop template's image becomes `ghcr.io/OWNER/beambox-desktop:<version>`, defined in one constant:
@@ -56,8 +55,7 @@ Desktop sandbox spends ~1.5 min installing packages from Debian on the user's ma
       foreground (checked by the CI smoke test on both architectures, and once on this Mac in a microVM booted from
       the locally built rootfs).
 - [ ] The workflow builds both architectures natively, smoke-tests each, pushes a multi-arch manifest only on
-      `desktop-v*` tags, and never pushes from pull requests (a test reads the workflow file for these triggers and
-      the `push: ${{ startsWith(github.ref, 'refs/tags/desktop-v') }}` condition).
+      `desktop-v*` tags, which are its only trigger (a test reads the workflow file for its triggers).
 - [ ] Creating a Desktop sandbox uses `DESKTOP_IMAGE`. When creating from it fails, create builds the local
       snapshot instead and reports the fallback. Both paths are tested on the fake backend.
 - [ ] A Desktop sandbox created from the image looks the same as one from the local build (screenshot check, run
@@ -87,9 +85,8 @@ Desktop sandbox spends ~1.5 min installing packages from Debian on the user's ma
   - `theme.sh` and the `browser` wrapper are folded into `install.sh`. The menu and dock launch `chromium`
     directly: Debian's wrapper already reads `/etc/chromium.d/beambox` for `--no-sandbox`. `install.sh` does its
     own `apt-get update` and clean, and adds `procps`, because `start-desktop` and `beambox-desktop` use `pgrep`.
-  - The workflow's push condition sits in buildx's `outputs` (`push-by-digest=true,name-canonical=true,push=${{
-    startsWith(github.ref, 'refs/tags/desktop-v') }}`), the documented way to push by digest. Login, digest upload
-    and the merge job have the same `if:`.
+  - The workflow pushes through buildx's `outputs` (`push-by-digest=true,name-canonical=true,push=true`), the
+    documented way to push by digest. Since it runs only on tags, no step needs a tag `if:`.
   - The fallback notice travels as an optional `notice` field on the created sandbox. The app shows it as a warning
     toast, and the CLI prints it to stderr. A plain desktop no longer prints "Preparing the desktop" up front,
     because whether the image is cached isn't known.

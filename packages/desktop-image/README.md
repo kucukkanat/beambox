@@ -123,13 +123,12 @@ It works against any desktop: Docker's, or a Beambox sandbox's host port.
 
 ## CI and releases
 
-`.github/workflows/desktop-image.yml`:
+`.github/workflows/desktop-image.yml` runs only when you push a `desktop-v<version>` tag:
 1. Builds each architecture with buildx on its own native runner (`ubuntu-24.04`, `ubuntu-24.04-arm`).
 2. Smoke-tests it: runs the container, waits for `vnc-frame.ts` to see at least 20% non-black, then requires
    Xvnc, openbox, tint2 and Plank to be running.
-3. Pull requests that touch this package stop there: build and test only.
-4. A `desktop-v<version>` tag also pushes each architecture by digest and merges them into `:<version>` and
-   `:latest`, with the built-in `GITHUB_TOKEN`.
+3. Pushes each architecture by digest and merges them into `:<version>` and `:latest`, with the built-in
+   `GITHUB_TOKEN`.
 
 Release a new image whenever `image/` changes:
 1. Bump the tag in this README's examples.

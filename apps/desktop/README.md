@@ -135,8 +135,7 @@ bundle with any unsigned binary in it.
 Certificates), copy `.env.example` to `.env` and fill it in. `.env` is gitignored.
 
 **On GitHub:** `.github/workflows/desktop-app.yml` runs the same script on a macOS runner, with the certificate in a
-throwaway keychain. Run it by hand (Actions → desktop-app → Run workflow) to get the `.dmg` as a workflow artifact, or
-push a tag to get a draft release with the `.dmg` attached:
+throwaway keychain. It runs only when you push an `app-v*` tag, and attaches the `.dmg` to a draft release:
 
 ```bash
 git tag app-v0.1.0 && git push origin app-v0.1.0   # keep it in step with "version" in tauri.conf.json

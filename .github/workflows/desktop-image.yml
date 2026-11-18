@@ -1,15 +1,11 @@
 # The Beambox desktop image (packages/desktop-image/image/) for linux/amd64 and linux/arm64, each built on a native
-# runner and smoke-tested over VNC. Pull requests build and test only. A `desktop-v<version>` tag also pushes both by
-# digest and merges them into ghcr.io/OWNER/beambox-desktop:<version> and :latest. See packages/desktop-image/README.md.
+# runner and smoke-tested over VNC. Runs only for a `desktop-v<version>` tag, which then pushes both by digest and
+# merges them into ghcr.io/OWNER/beambox-desktop:<version> and :latest. See packages/desktop-image/README.md.
 name: desktop-image
 
 on:
   push:
     tags: ["desktop-v*"]
-  pull_request:
-    paths:
-      - ".github/workflows/desktop-image.yml"
-      - "packages/desktop-image/**"
 
 permissions:
   contents: read
@@ -69,7 +65,6 @@ jobs:
           docker logs desktop || true
           docker exec desktop sh -c 'tail -n 50 /tmp/*.log' || true
       - name: Log in to GHCR
-        if: startsWith(github.ref, 'refs/tags/desktop-v')
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -77,7 +72,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Push by digest
         id: push
-        if: startsWith(github.ref, 'refs/tags/desktop-v')
         uses: docker/build-push-action@v6
         with:
           context: packages/desktop-image/image
@@ -85,17 +79,15 @@ jobs:
           build-args: VERSION=${{ steps.meta.outputs.version }}
           labels: ${{ steps.meta.outputs.labels }}
           tags: ${{ env.IMAGE }}
-          outputs: type=image,push-by-digest=true,name-canonical=true,push=${{ startsWith(github.ref, 'refs/tags/desktop-v') }}
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=desktop-${{ matrix.arch }}
       - name: Keep the digest
-        if: startsWith(github.ref, 'refs/tags/desktop-v')
         run: |
           mkdir -p /tmp/digests
           touch "/tmp/digests/${DIGEST#sha256:}"
         env:
           DIGEST: ${{ steps.push.outputs.digest }}
       - name: Upload the digest
-        if: startsWith(github.ref, 'refs/tags/desktop-v')
         uses: actions/upload-artifact@v4
         with:
           name: digest-${{ matrix.arch }}
@@ -105,7 +97,6 @@ jobs:
 
   merge:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/desktop-v')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4

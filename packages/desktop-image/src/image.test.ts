@@ -12,8 +12,6 @@ const has = (text: string, part: string) => assert.ok(text.includes(part), part)
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 const dockerfile = read("../image/Dockerfile");
 const workflow = read("../../../.github/workflows/desktop-image.yml");
-// biome-ignore lint/suspicious/noTemplateCurlyInString: a GitHub Actions expression, not a template
-const PUSH = "${{ startsWith(github.ref, 'refs/tags/desktop-v') }}";
 
 it("the Dockerfile installs the packages in a layer the desktop's files don't invalidate", () => {
   assert.match(dockerfile, /^FROM debian:trixie-slim$/m);
@@ -171,8 +169,6 @@ it("start-desktop serves the web desktop only when asked, behind a token, and be
 });
 
 it("the workflow builds both architectures natively and smoke-tests each", () => {
-  assert.match(workflow, /tags: \["desktop-v\*"\]/);
-  assert.match(workflow, /pull_request:\n\s+paths:\n(\s+- .*\n)*\s+- "packages\/desktop-image\/\*\*"/);
   assert.match(workflow, /platform: linux\/amd64\n\s+runner: ubuntu-24\.04\n/);
   assert.match(workflow, /platform: linux\/arm64\n\s+runner: ubuntu-24\.04-arm\n/);
   // biome-ignore lint/suspicious/noTemplateCurlyInString: a GitHub Actions expression, not a template
@@ -185,20 +181,11 @@ it("the workflow builds both architectures natively and smoke-tests each", () =>
   has(workflow, "ghcr.io/OWNER/beambox-desktop");
 });
 
-it("the workflow pushes a multi-arch manifest only on desktop-v tags, never from pull requests", () => {
-  has(workflow, `push-by-digest=true,name-canonical=true,push=${PUSH}`);
-  assert.doesNotMatch(workflow, /push(: |=)true/);
-  // In the build job, which pull requests run, logging in and every push step happen on tags only. The merge
-  // job runs on tags only as a whole.
-  const build = workflow.slice(workflow.indexOf("  build:"), workflow.indexOf("  merge:"));
-  const steps = build.split(/\n\s+- (?=name:|uses:)/);
-  const guarded = steps.filter((s) => /login-action|Push by digest|upload-artifact/.test(s));
-  assert.equal(guarded.length, 3);
-  for (const step of guarded) has(step, `if: ${PUSH.slice(4, -3)}`);
-  assert.match(
-    workflow,
-    /merge:\n\s+needs: build\n\s+if: startsWith\(github\.ref, 'refs\/tags\/desktop-v'\)/,
-  );
+it("the workflow runs only for desktop-v tags and then pushes a multi-arch manifest", () => {
+  // The only trigger is a pushed desktop-v tag: no pull requests, branches or manual runs.
+  const triggers = workflow.slice(workflow.indexOf("\non:\n"), workflow.indexOf("\npermissions:"));
+  assert.equal(triggers.trim(), 'on:\n  push:\n    tags: ["desktop-v*"]');
+  has(workflow, "push-by-digest=true,name-canonical=true,push=true");
   has(workflow, "docker buildx imagetools create");
   has(workflow, "type=match,pattern=desktop-v(.*),group=1");
   has(workflow, "type=raw,value=latest");
