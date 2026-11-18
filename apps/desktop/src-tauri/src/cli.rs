@@ -798,7 +798,7 @@ mod tests {
         fake.failing_images.lock().unwrap().insert(crate::core::DESKTOP_IMAGE.into());
         let out = beambox(&core, "create d2 -t desktop", "").await;
         assert_eq!(out.code, Ok(0), "{}", out.stderr);
-        assert!(out.stderr.contains("so Beambox built the desktop on this computer"), "{}", out.stderr);
+        assert!(out.stderr.contains("so Beambox built it on this computer"), "{}", out.stderr);
         assert!(out.stdout.contains("d2"), "{}", out.stdout);
     }
 

@@ -1,5 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 export type Status = "booting" | "running" | "stopped" | "crashed";
@@ -19,6 +20,9 @@ export type Sandbox = {
 export type Harness = "claude-code" | "codex" | "opencode";
 /** Everything left out gets the Rust core's default (base, 1 vCPU, 256 MiB, auto name, public network). */
 export type CreateOpts = {
+  name?: string;
+  cpus?: number;
+  memoryMib?: number;
   harness?: Harness;
   /** The harness's first prompt. */
   task?: string;
@@ -27,7 +31,10 @@ export type CreateOpts = {
   network?: string;
   ports?: number[];
 };
-export type DirEntry = { path: string; dir: boolean };
+/** `link`: a symbolic link, which may lead to a folder. */
+export type DirEntry = { path: string; dir: boolean; link?: boolean };
+/** What an agent sandbox's harness is doing. `exited` leaves its terminal at a plain shell. */
+export type AgentStatus = "running" | "frozen" | "exited";
 export type Metrics = { cpuPercent: number; memoryBytes: number };
 export type HypervisorState = "ok" | "missing" | "unsupported";
 export type Hypervisor = { state: HypervisorState; os: string };
@@ -49,6 +56,11 @@ export type Api = {
   /** Whether the agent is frozen (Take over). */
   takeover(name: string): Promise<boolean>;
   setTakeover(name: string, on: boolean): Promise<void>;
+  agentStatus(name: string): Promise<AgentStatus>;
+  /** Start the harness again (without its task), signing in again if it needs to. */
+  restartAgent(name: string): Promise<void>;
+  /** A folder on this computer picked in the system dialog, or null when cancelled. */
+  pickFolder(): Promise<string | null>;
   /** Names of the stored credentials (`anthropic`, `openai`), never their values. */
   credentials(): Promise<string[]>;
   /** Open a link (e.g. a harness's sign-in page) in the computer's default browser. */
@@ -92,6 +104,12 @@ export const tauriApi: Api = {
   metrics: (name) => invoke("metrics", { name }),
   takeover: (name) => invoke("takeover", { name }),
   setTakeover: (name, on) => invoke("set_takeover", { name, on }),
+  agentStatus: (name) => invoke("agent_status", { name }),
+  restartAgent: (name) => invoke("restart_agent", { name }),
+  pickFolder: async () => {
+    const folder = await open({ directory: true, title: "Mount a folder at /workspace" });
+    return typeof folder === "string" ? folder : null;
+  },
   credentials: () => invoke("credentials_list"),
   openUrl: (url) => openUrl(url),
   missingCredentials: (harness) => invoke("credentials_missing", { harness }),

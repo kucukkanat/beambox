@@ -39,6 +39,7 @@ Record project-specific choices (frameworks, database, deploy target) here once 
 | Web UI | React + Vite, shadcn/ui on Tailwind v4, `motion`, `sonner` (toasts) |
 | Terminal / VNC in the UI | `@xterm/xterm`, `@novnc/novnc` |
 | UI tests | Vitest + Testing Library (jsdom); Rust: `cargo test`, called from the npm `test` script |
+| Native file and folder pickers | `tauri-plugin-dialog` + `@tauri-apps/plugin-dialog` |
 | Add rows here as the project picks libraries | |
 
 ## Commands (repo root)

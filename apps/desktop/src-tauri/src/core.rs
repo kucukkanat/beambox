@@ -11,12 +11,12 @@ pub const TEMPLATES: &[(&str, &str, u32, &[u16])] = &[
     // (name, image, default memory MiB, guest ports published by default)
     ("base", "alpine:3.22", 256, &[]),
     // Pulled from the registry; built locally into a snapshot when that fails (see `create`).
-    ("desktop", DESKTOP_IMAGE, 2048, &[VNC_PORT]),
+    ("desktop", DESKTOP_IMAGE, 4096, &[VNC_PORT]),
 ];
 /// The Desktop template's image: `packages/desktop-image/image/` on Debian, built and published by
 /// `.github/workflows/desktop-image.yml`. Its tag follows the desktop snapshot's member (`snapshot_key`): bump
 /// both when `packages/desktop-image/image/` changes.
-pub const DESKTOP_IMAGE: &str = "ghcr.io/OWNER/beambox-desktop:7";
+pub const DESKTOP_IMAGE: &str = "ghcr.io/OWNER/beambox-desktop:8";
 pub const VNC_PORT: u16 = 5900;
 /// The guest port of the desktop in a browser (`CreateOpts::web`, start-desktop's web desktop).
 pub const WEB_PORT: u16 = 6080;
@@ -30,9 +30,9 @@ pub const BUILD_PREFIX: &str = "beambox-build-";
 pub fn snapshot_key(harness: Option<&str>, desktop: bool) -> Option<(String, String)> {
     match (harness, desktop) {
         (None, false) => None,
-        (None, true) => Some(("beambox-build-desktop".into(), "beambox-desktop-7".into())),
+        (None, true) => Some(("beambox-build-desktop".into(), "beambox-desktop-8".into())),
         (Some(h), false) => Some((format!("{BUILD_PREFIX}{h}"), format!("beambox-{h}-5"))),
-        (Some(h), true) => Some((format!("{BUILD_PREFIX}{h}-desktop"), format!("beambox-{h}-desktop-9"))),
+        (Some(h), true) => Some((format!("{BUILD_PREFIX}{h}-desktop"), format!("beambox-{h}-desktop-10"))),
     }
 }
 
@@ -54,9 +54,9 @@ pub struct CreateOpts {
     pub task: Option<String>,
     /// Add a desktop (the `desktop` template for plain sandboxes).
     pub desktop: Option<bool>,
-    /// vCPUs, default 1 (2 for agents).
+    /// vCPUs, default 1 (2 for agents and desktops: Chromium is slow on one).
     pub cpus: Option<u8>,
-    /// Memory in MiB, default 256 (512 for `desktop`, 2048 for agents, 4096 for agents with a desktop).
+    /// Memory in MiB, default 256 (4096 for desktops, 2048 for agents, 4096 for agents with a desktop).
     pub memory_mib: Option<u32>,
     /// Host folder to mount at /workspace.
     pub mount: Option<String>,
@@ -138,7 +138,7 @@ impl Core {
             name: opts.name.clone().unwrap_or_default(),
             template: template.clone(),
             image: image.into(),
-            cpus: opts.cpus.unwrap_or(if harness.is_some() { 2 } else { 1 }),
+            cpus: opts.cpus.unwrap_or(if harness.is_some() || desktop { 2 } else { 1 }),
             memory_mib: opts.memory_mib.unwrap_or(memory),
             mount: opts.mount.clone(),
             network: opts.network.clone().unwrap_or_else(|| "public".into()),
@@ -165,11 +165,13 @@ impl Core {
                         let _ = self.backend.delete(&name).await;
                         let snapshot = self.snapshot_for(None, true).await?;
                         let mut info = self.boot(self.reserve(boot(image, Some(snapshot)), &ports).await?).await?;
-                        info.notice = Some(format!(
-                            "Couldn't start the desktop from {image} ({}), so Beambox built the desktop on this \
-                             computer.",
-                            e.trim()
-                        ));
+                        // The registry's own words mean nothing to most people; they stay on stderr.
+                        eprintln!("beambox: couldn't start the desktop from {image}: {}", e.trim());
+                        info.notice = Some(
+                            "The desktop couldn't be downloaded, so Beambox built it on this computer instead. That \
+                             happens once: later desktops start in seconds."
+                                .into(),
+                        );
                         info
                     }
                 }
@@ -394,7 +396,63 @@ impl Core {
         }
         .await;
         let _ = self.backend.delete(&builder).await;
-        built.map(|_| reference)
+        built?;
+        // A new member usually replaces an older one: free its disk space.
+        let _ = self.prune_snapshots().await;
+        Ok(reference)
+    }
+
+    /// What the harness is doing: `running`, `frozen` (taken over) or `exited`, such as after a sign-in that timed
+    /// out, which leaves the agent's terminal at a plain shell.
+    pub async fn agent_status(&self, name: &str) -> Result<&'static str> {
+        let out = self.backend.exec(name, &takeover_probe()).await?;
+        let state = out.stdout.trim_start();
+        Ok(if state.is_empty() {
+            "exited"
+        } else if state.starts_with('T') {
+            "frozen"
+        } else {
+            "running"
+        })
+    }
+
+    /// Start the harness again in a fresh `agent` session (without the task), replacing the shell an exited harness
+    /// left behind. Without a stored key it signs in again, or reuses a login another sandbox has.
+    pub async fn restart_agent_session(&self, name: &str) -> Result<()> {
+        self.backend.exec(name, "tmux kill-session -t agent 2>/dev/null; true").await?;
+        let all = self.backend.list().await?;
+        let info = all.iter().find(|s| s.name == name).ok_or(format!("no sandbox named {name}"))?;
+        let harness = agent::harness(info.harness.as_deref().ok_or(format!("{name} has no agent"))?)?;
+        let env = self.credential_env(harness).ok();
+        if env.is_none() {
+            self.reuse_login(info, harness).await?;
+        }
+        self.start_agent(info, harness, None, env).await
+    }
+
+    /// Delete Beambox's own snapshots from earlier versions: each version bump builds new ones and leaves the old
+    /// ones (about 4 GiB each) behind. Sandboxes made from them keep working, as their disks are their own. Returns
+    /// what was deleted. A snapshot that can't go yet (say, the head of a group whose other members go later in the
+    /// same pass) is tried again once, and otherwise left for next time.
+    pub async fn prune_snapshots(&self) -> Result<Vec<String>> {
+        let current: Vec<String> = [None]
+            .into_iter()
+            .chain(agent::HARNESSES.iter().map(|h| Some(h.name)))
+            .flat_map(|h| [false, true].map(|desktop| snapshot_name(h, desktop)))
+            .flatten()
+            .collect();
+        let mut removed = Vec::new();
+        for _ in 0..2 {
+            for snapshot in self.backend.list_snapshots().await? {
+                if snapshot.starts_with(BUILD_PREFIX)
+                    && !current.contains(&snapshot)
+                    && self.backend.remove_snapshot(&snapshot).await.is_ok()
+                {
+                    removed.push(snapshot);
+                }
+            }
+        }
+        Ok(removed)
     }
 
     /// Take over: freeze the harness's processes (SIGSTOP) and switch the session to a new shell window, so what you
@@ -613,11 +671,11 @@ mod tests {
         let (_, core) = core_with(|_| true);
         let info = core.create(CreateOpts { template: Some("desktop".into()), ..Default::default() }).await.unwrap();
         // A browser needs more than the base 256 MiB.
-        assert_eq!(info.memory_mib, 2048);
+        assert_eq!((info.cpus, info.memory_mib), (2, 4096));
         assert_eq!(info.ports, [Port { guest: VNC_PORT, host: VNC_PORT }]);
         // `desktop: true` without a harness is the same thing.
         let info = core.create(CreateOpts { desktop: Some(true), ..Default::default() }).await.unwrap();
-        assert_eq!((info.template.as_str(), info.memory_mib), ("desktop", 2048));
+        assert_eq!((info.template.as_str(), info.memory_mib), ("desktop", 4096));
     }
 
     #[tokio::test]
@@ -740,7 +798,7 @@ mod tests {
         let info = core.create(opts).await.unwrap();
         assert_eq!((info.template.as_str(), info.memory_mib), ("desktop", 4096));
         let spec = fake.specs.lock().unwrap().last().unwrap().clone();
-        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-9"));
+        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-10"));
     }
 
     #[tokio::test]
@@ -763,7 +821,7 @@ mod tests {
         let specs = fake.specs.lock().unwrap().clone();
         let snapshot = |name: &str| specs.iter().find(|s| s.name == name).unwrap().snapshot.clone().unwrap();
         assert_eq!(snapshot("a"), snapshot("b"));
-        assert_eq!(snapshot("c"), "beambox-build-codex-desktop:beambox-codex-desktop-9");
+        assert_eq!(snapshot("c"), "beambox-build-codex-desktop:beambox-codex-desktop-10");
         let c = specs.iter().find(|s| s.name == "c").unwrap();
         assert_eq!((c.memory_mib, c.ports.len(), c.template.as_str()), (4096, 1, "desktop"));
         let names: Vec<_> = core.backend.list().await.unwrap().into_iter().map(|s| s.name).collect();
@@ -790,12 +848,13 @@ mod tests {
         fake.failing_images.lock().unwrap().insert(DESKTOP_IMAGE.into());
         let info = core.create(plain_desktop()).await.unwrap();
         let notice = info.notice.unwrap();
-        assert!(notice.contains("built the desktop on this computer"), "{notice}");
-        assert!(notice.contains(DESKTOP_IMAGE) && notice.contains("registry unreachable"), "{notice}");
+        // In plain words: the registry's error goes to stderr, not to the person.
+        assert!(notice.contains("built it on this computer"), "{notice}");
+        assert!(!notice.contains("registry unreachable"), "{notice}");
         assert_eq!((info.name.as_str(), info.ports.as_slice()), ("sandbox-1", &[Port { guest: VNC_PORT, host: VNC_PORT }][..]));
         let spec = fake.specs.lock().unwrap().last().unwrap().clone();
-        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-desktop:beambox-desktop-7"));
-        assert_eq!((spec.template.as_str(), spec.memory_mib), ("desktop", 2048));
+        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-desktop:beambox-desktop-8"));
+        assert_eq!((spec.template.as_str(), spec.memory_mib), ("desktop", 4096));
         // The next one boots from that snapshot straight away: the same desktop, without asking the registry again.
         let second = core.create(plain_desktop()).await.unwrap();
         assert_eq!(second.notice, None);
@@ -867,7 +926,7 @@ mod tests {
         assert_eq!(image, agent::IMAGE);
         assert!(script.contains("sh /tmp/beambox-desktop/install.sh"));
         let spec = fake.specs.lock().unwrap().last().unwrap().clone();
-        assert_eq!((spec.name, spec.snapshot.as_deref()), (info.name, Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-9")));
+        assert_eq!((spec.name, spec.snapshot.as_deref()), (info.name, Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-10")));
     }
 
     #[test]
@@ -881,7 +940,7 @@ mod tests {
     #[test]
     fn snapshot_names_are_group_and_member() {
         assert_eq!(snapshot_name(None, false), None);
-        assert_eq!(snapshot_name(Some("opencode"), true).unwrap(), "beambox-build-opencode-desktop:beambox-opencode-desktop-9");
+        assert_eq!(snapshot_name(Some("opencode"), true).unwrap(), "beambox-build-opencode-desktop:beambox-opencode-desktop-10");
         for (h, d) in [(None, true), (Some("codex"), false)] {
             assert!(snapshot_key(h, d).unwrap().0.starts_with(BUILD_PREFIX));
         }
@@ -927,5 +986,57 @@ mod tests {
         assert_eq!(child.name, "a-fork-1");
         assert_eq!(child.ports, [Port { guest: 3000, host: 3001 }]);
         assert_eq!(core.fork("a").await.unwrap().ports, [Port { guest: 3000, host: 3002 }]);
+    }
+    #[tokio::test]
+    async fn agent_status_tells_a_running_a_frozen_and_an_exited_harness_apart() {
+        let (fake, core) = core_with(|_| true);
+        core.create(named("a", "codex")).await.unwrap();
+        let reply = |stdout: &str| ExecResult { stdout: stdout.into(), stderr: String::new(), exit_code: 0 };
+        // No harness processes left: the sign-in timed out, and the session fell back to a shell.
+        fake.replies.lock().unwrap().insert(takeover_probe(), reply(""));
+        assert_eq!(core.agent_status("a").await.unwrap(), "exited");
+        fake.replies.lock().unwrap().insert(takeover_probe(), reply("T\n"));
+        assert_eq!(core.agent_status("a").await.unwrap(), "frozen");
+        fake.replies.lock().unwrap().insert(takeover_probe(), reply("S\n"));
+        assert_eq!(core.agent_status("a").await.unwrap(), "running");
+    }
+
+    #[tokio::test]
+    async fn restarting_an_agent_replaces_its_session_without_the_task() {
+        let (fake, core) = core_with(|_| true);
+        core.create(CreateOpts { task: Some("fix it".into()), ..named("a", "claude-code") }).await.unwrap();
+        fake.execs.lock().unwrap().clear();
+        core.restart_agent_session("a").await.unwrap();
+        let execs = fake.execs.lock().unwrap();
+        assert!(execs[0].1.starts_with("tmux kill-session -t agent"), "{execs:?}");
+        let start = &execs.last().unwrap().1;
+        assert!(start.starts_with("tmux new-session -d -s agent") && !start.contains("fix it"), "{start}");
+        // A plain sandbox has no agent to restart.
+        drop(execs);
+        core.create(CreateOpts { name: Some("plain".into()), ..Default::default() }).await.unwrap();
+        assert!(core.restart_agent_session("plain").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn pruning_deletes_only_beamboxs_snapshots_from_older_versions() {
+        let (fake, core) = core_with(|_| true);
+        let current = snapshot_name(Some("codex"), true).unwrap();
+        let old = ["beambox-build-codex-desktop:beambox-codex-desktop-4", "beambox-build-desktop:beambox-desktop-5"];
+        // A snapshot someone made of their own sandbox is theirs to keep.
+        let theirs = "cli-test:cli-test-1795000000";
+        fake.snapshots.lock().unwrap().extend([current.clone(), theirs.into()].into_iter().chain(old.map(String::from)));
+        let mut removed = core.prune_snapshots().await.unwrap();
+        removed.sort();
+        assert_eq!(removed, old);
+        assert_eq!(*fake.snapshots.lock().unwrap(), [current, theirs.to_string()].into_iter().collect());
+    }
+
+    #[tokio::test]
+    async fn plain_desktops_get_two_vcpus() {
+        let (_, core) = core_with(|_| true);
+        let info = core.create(CreateOpts { desktop: Some(true), ..Default::default() }).await.unwrap();
+        assert_eq!(info.cpus, 2);
+        let base = core.create(CreateOpts::default()).await.unwrap();
+        assert_eq!(base.cpus, 1);
     }
 }

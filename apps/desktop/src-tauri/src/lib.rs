@@ -166,6 +166,17 @@ async fn takeover(app: State<'_, App>, name: String) -> Result<bool> {
     app.core.is_taken_over(&name).await
 }
 
+/// `running`, `frozen` or `exited`.
+#[tauri::command]
+async fn agent_status(app: State<'_, App>, name: String) -> Result<&'static str> {
+    app.core.agent_status(&name).await
+}
+
+#[tauri::command]
+async fn restart_agent(app: State<'_, App>, name: String) -> Result<()> {
+    app.core.restart_agent_session(&name).await
+}
+
 #[tauri::command]
 fn credentials_list(app: State<'_, App>) -> Result<Vec<String>> {
     credentials::stored(app.core.secrets.as_ref())
@@ -304,6 +315,15 @@ async fn terminal_close(app: State<'_, App>, id: u64) -> Result<()> {
 pub fn run(open: Option<String>) {
     let context = context();
     let (core, _) = setup(&context);
+    // Free the disk space older versions' snapshots take, in the background.
+    let pruning = core.clone();
+    tauri::async_runtime::spawn(async move {
+        match pruning.prune_snapshots().await {
+            Ok(removed) if !removed.is_empty() => eprintln!("beambox: deleted old snapshots {}", removed.join(", ")),
+            Ok(_) => {}
+            Err(e) => eprintln!("beambox: couldn't delete old snapshots: {e}"),
+        }
+    });
     tauri::Builder::default()
         // First: a second launch (`beambox desktop`, a Dock click) focuses this window instead of opening another.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
@@ -316,6 +336,8 @@ pub fn run(open: Option<String>) {
         }))
         // Sign-in links in an agent's terminal open in the computer's own browser.
         .plugin(tauri_plugin_opener::init())
+        // The New sandbox form's folder picker.
+        .plugin(tauri_plugin_dialog::init())
         .manage(App {
             core,
             terminals: Default::default(),
@@ -338,6 +360,8 @@ pub fn run(open: Option<String>) {
             metrics,
             set_takeover,
             takeover,
+            agent_status,
+            restart_agent,
             credentials_list,
             credentials_set,
             credentials_remove,

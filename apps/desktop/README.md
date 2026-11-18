@@ -11,6 +11,14 @@ Beambox desktop: a Tauri 2 app that gives each AI agent its own computer, a micr
 - **GUI**: a grid of sandbox cards (start, stop, fork, snapshot, delete with 5 s undo). Each sandbox has Terminal,
   Files, Logs, Ports and, with a desktop, a noVNC Desktop tab. Agent sandboxes also get **Take over**, which
   freezes the harness (SIGSTOP) so you can use the terminal and desktop undisturbed, and **Hand back** (SIGCONT).
+  - A create shows a booting card until its sandbox is there. The ▾ form takes a name, vCPUs, memory and a folder
+    to mount (typed, or picked with **Browse…**, `tauri-plugin-dialog`); empty fields show the defaults.
+  - Each card shows CPU and memory use over the last minute. An agent sandbox whose harness has exited (a sign-in
+    that timed out, say) shows **Agent stopped**, an amber dot and **Restart agent** (`Core::agent_status`,
+    `Core::restart_agent_session`: a fresh `agent` tmux session without the task).
+  - Files opens at `/workspace` (the root if there's none), hides microsandbox's `/.msb` and opens symlinks to
+    folders as folders. Logs shows the terminal output as plain text (`src/ansi.ts`). Ports lists the desktop's VNC
+    port as the Desktop tab rather than as a web page.
 - **Signing in** happens inside the sandbox, with a subscription or a key. Without a stored key, the harness signs
   in in its own terminal before starting on the task: Claude Code runs `claude auth login`, Codex runs
   `codex login --device-auth`, and OpenCode starts on its free models (`/connect` adds a provider). The app opens
@@ -133,18 +141,23 @@ doesn't wait for GUI-subsystem programs, so output can land after the next promp
   it, save the disk snapshot, and delete the build sandbox. Every sandbox after that boots from the snapshot in
   seconds. `snapshot_key` in `core.rs` names them; bump a member's suffix when its setup changes. A lock file,
   `snapshot-build.lock` in the app data dir, makes the app and CLI processes build each snapshot once.
+  `Core::prune_snapshots` deletes `beambox-build-…` snapshots that aren't a current `snapshot_key` (about 4 GiB
+  each) when the app starts and after each build. Sandboxes made from them keep working: their disks are their own.
+  The SDK lists a snapshot's member and group separately; Beambox joins them into the `<group>:<member>` name.
 
   | Kind | Base image | Setup | Snapshot | First build |
   | --- | --- | --- | --- | --- |
-  | Desktop (plain) | `DESKTOP_IMAGE`, pulled; `debian:trixie-slim` if that fails | `desktop_setup()` (fallback only) | `beambox-build-desktop:beambox-desktop-7` (fallback only) | a pull; ~1.5 min built |
+  | Desktop (plain) | `DESKTOP_IMAGE`, pulled; `debian:trixie-slim` if that fails | `desktop_setup()` (fallback only) | `beambox-build-desktop:beambox-desktop-8` (fallback only) | a pull; ~1.5 min built |
   | Agent | `debian:trixie-slim` | `agent_setup(h, false)` + `mcp.js` + MCP config | `beambox-build-<h>:beambox-<h>-5` | ~40 s |
-  | Agent + desktop | `DESKTOP_IMAGE`; `debian:trixie-slim` if it can't be pulled | `agent_setup(h, false)` (`agent_setup(h, true)` on Debian) + the same files | `beambox-build-<h>-desktop:beambox-<h>-desktop-9` | ~1 min on the image, ~2 min on Debian |
+  | Agent + desktop | `DESKTOP_IMAGE`; `debian:trixie-slim` if it can't be pulled | `agent_setup(h, false)` (`agent_setup(h, true)` on Debian) + the same files | `beambox-build-<h>-desktop:beambox-<h>-desktop-10` | ~1 min on the image, ~2 min on Debian |
 
   Agent snapshots get Node 24 (NodeSource), the harness from npm (`@anthropic-ai/claude-code`, `@openai/codex`,
   `opencode-ai`; latest at build time), tmux, git, curl, `/opt/beambox/mcp.js` and the harness's MCP config
   (`/root/.claude.json`, `/root/.codex/config.toml`, `/root/.config/opencode/opencode.json`). With a desktop they
   start from the desktop image instead (see [Desktop image](#desktop-image)). Agent
-  sandboxes default to 2 vCPUs and 2 GiB (4 GiB with a desktop). The app runs `start-desktop` after each boot.
+  sandboxes default to 2 vCPUs and 2 GiB (4 GiB with a desktop); plain desktops to 2 vCPUs and 4 GiB, since
+  Chromium crawls on one. The app runs `start-desktop` after each boot. A plain sandbox's terminal is bash when the
+  image has it (desktops do), else `sh`.
 - **What's in a desktop:** see [`packages/desktop-image`](../../packages/desktop-image). Xvnc, openbox with
   the Beambox theme, a tint2 top bar, the Plank dock, xterm and Chromium.
 - `node scripts/cargo.mjs test real_ -- --ignored --test-threads=1` checks this against real microVMs: the Alpine desktop, a
@@ -161,9 +174,9 @@ code embeds that folder (`DESKTOP_FILES` in `agent.rs`), so the app and the imag
 
 - **Desktop sandboxes** are created from `DESKTOP_IMAGE` (`core.rs`). microsandbox pulls it anonymously once, and
   later desktops reuse the cached layers. If creating from it fails (offline, registry down, not published yet),
-  Beambox deletes what the attempt left, builds the `beambox-build-desktop:beambox-desktop-7` snapshot by running
+  Beambox deletes what the attempt left, builds the `beambox-build-desktop:beambox-desktop-8` snapshot by running
   the package's `install.sh` on `debian:trixie-slim` (~1.5 min, once), and says so in a toast or on the CLI's
-  stderr. Once that snapshot exists, desktops boot from it without asking the registry until the version is
+  stderr (the registry's own error goes to stderr only). Once that snapshot exists, desktops boot from it without asking the registry until the version is
   bumped. Pulling runs outside the lock that picks names and ports, so other creates aren't held up.
 - **Agent desktops** are built on the desktop image: their snapshot boots `DESKTOP_IMAGE` and adds only the agent
   (`agent_setup(h, false)`). If the image can't be pulled, the build installs the same desktop on Debian instead

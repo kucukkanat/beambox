@@ -68,6 +68,9 @@ pub struct ExecResult {
 pub struct DirEntry {
     pub path: String,
     pub dir: bool,
+    /// A symbolic link, such as Debian's `/bin` → `usr/bin`: it may lead to a folder.
+    #[serde(default)]
+    pub link: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
@@ -88,6 +91,9 @@ pub trait SandboxBackend: Send + Sync {
     async fn fork(&self, name: &str, child: &str, ports: &[Port]) -> Result<SandboxInfo>;
     async fn snapshot(&self, name: &str, snapshot: &str) -> Result<()>;
     async fn has_snapshot(&self, snapshot: &str) -> Result<bool>;
+    /// Every snapshot's `<group>:<member>` name.
+    async fn list_snapshots(&self) -> Result<Vec<String>>;
+    async fn remove_snapshot(&self, snapshot: &str) -> Result<()>;
     async fn delete(&self, name: &str) -> Result<()>;
     /// Run `command` through `/bin/sh -c`.
     async fn exec(&self, name: &str, command: &str) -> Result<ExecResult>;
@@ -188,6 +194,12 @@ pub mod fake {
         async fn has_snapshot(&self, snapshot: &str) -> Result<bool> {
             Ok(self.snapshots.lock().unwrap().contains(snapshot))
         }
+        async fn list_snapshots(&self) -> Result<Vec<String>> {
+            Ok(self.snapshots.lock().unwrap().iter().cloned().collect())
+        }
+        async fn remove_snapshot(&self, snapshot: &str) -> Result<()> {
+            self.snapshots.lock().unwrap().remove(snapshot).then_some(()).ok_or_else(|| format!("no snapshot {snapshot}"))
+        }
         async fn delete(&self, name: &str) -> Result<()> {
             self.sandboxes.lock().unwrap().remove(name).map(|_| ()).ok_or_else(|| format!("no sandbox named {name}"))
         }
@@ -227,7 +239,7 @@ pub mod fake {
         async fn list_dir(&self, name: &str, path: &str) -> Result<Vec<DirEntry>> {
             let files = self.files.lock().unwrap();
             let inside = files.keys().filter(|(n, p)| n == name && p.starts_with(path));
-            Ok(inside.map(|(_, p)| DirEntry { path: p.clone(), dir: false }).collect())
+            Ok(inside.map(|(_, p)| DirEntry { path: p.clone(), dir: false, link: false }).collect())
         }
         async fn logs(&self, _name: &str) -> Result<Vec<String>> {
             Ok(vec![])

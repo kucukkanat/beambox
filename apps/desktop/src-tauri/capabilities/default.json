@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "The main window can call the app's commands and listen for events.",
   "windows": ["main"],
-  "permissions": ["core:default", "opener:default"]
+  "permissions": ["core:default", "opener:default", "dialog:allow-open"]
 }

@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App.tsx";
@@ -35,6 +35,9 @@ function fakeApi(sandboxes: Sandbox[] = [], hypervisor: Hypervisor = { state: "o
     metrics: vi.fn(async () => ({ cpuPercent: 0, memoryBytes: 0 })),
     takeover: vi.fn(async () => false),
     setTakeover: vi.fn(async () => {}),
+    agentStatus: vi.fn(async () => "running" as const),
+    restartAgent: vi.fn(async () => {}),
+    pickFolder: vi.fn(async () => "/Users/me/project"),
     credentials: vi.fn(async () => ["openai"]),
     setCredential: vi.fn(async () => {}),
     removeCredential: vi.fn(async () => {}),
@@ -122,6 +125,64 @@ describe("home", () => {
     });
   });
 
+  it("shows a booting card while a create runs, and drops it when the sandbox is there", async () => {
+    const api = fakeApi();
+    let finish = (_: Sandbox) => {};
+    api.create = vi.fn(() => new Promise<Sandbox>((resolve) => (finish = resolve)));
+    render(<App api={api} />);
+    await userEvent.click(await screen.findByRole("button", { name: "New sandbox" }));
+    const card = await screen.findByRole("article", { name: "New sandbox, starting" });
+    expect(within(card).getByLabelText("booting")).toBeInTheDocument();
+    await act(async () => finish(sandbox({ name: "sandbox-1" })));
+    await waitFor(() =>
+      expect(screen.queryByRole("article", { name: "New sandbox, starting" })).not.toBeInTheDocument(),
+    );
+  });
+
+  it("creates with a name, vCPUs, memory and a folder picked in the system dialog", async () => {
+    const api = fakeApi();
+    render(<App api={api} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Sandbox options" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "Name" }), "web");
+    // The empty fields show the defaults you'd get.
+    expect(screen.getByRole("spinbutton", { name: "vCPUs" })).toHaveAttribute("placeholder", "1");
+    await userEvent.click(screen.getByRole("switch", { name: "Desktop" }));
+    expect(screen.getByRole("spinbutton", { name: "Memory (MiB)" })).toHaveAttribute("placeholder", "4096");
+    await userEvent.type(screen.getByRole("spinbutton", { name: "vCPUs" }), "4");
+    await userEvent.type(screen.getByRole("spinbutton", { name: "Memory (MiB)" }), "8192");
+    await userEvent.click(screen.getByRole("button", { name: "Browse…" }));
+    expect(await screen.findByDisplayValue("/Users/me/project")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+    expect(api.create).toHaveBeenCalledExactlyOnceWith({
+      name: "web",
+      cpus: 4,
+      memoryMib: 8192,
+      desktop: true,
+      mount: "/Users/me/project",
+      network: "public",
+    });
+  });
+
+  it("says when an agent has stopped and restarts it into its terminal", async () => {
+    const api = fakeApi([sandbox({ harness: "codex" })]);
+    api.agentStatus = vi.fn(async () => "exited" as const);
+    render(<App api={api} />);
+    const card = await screen.findByRole("article", { name: "a" });
+    expect(await within(card).findByText("Agent stopped")).toBeInTheDocument();
+    // Amber, not the green of a healthy sandbox.
+    expect(within(card).getByLabelText("running, agent stopped")).toHaveClass("bg-amber-500");
+    await userEvent.click(within(card).getByRole("button", { name: "Restart agent" }));
+    expect(api.restartAgent).toHaveBeenCalledExactlyOnceWith("a");
+    expect(await screen.findByRole("tab", { name: "Terminal", selected: true })).toBeInTheDocument();
+  });
+
+  it("labels the CPU and memory lines", async () => {
+    const api = fakeApi([sandbox()]);
+    render(<App api={api} />);
+    const card = await screen.findByRole("article", { name: "a" });
+    expect(card).toHaveTextContent(/CPU –\s*● Memory –/);
+  });
+
   it("counts the seconds while a first agent build runs, so it doesn't look stuck", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const api = fakeApi();
@@ -202,8 +263,11 @@ describe("home", () => {
     const api = fakeApi();
     render(<App api={api} />);
     await userEvent.click(await screen.findByRole("button", { name: "Settings" }));
-    expect(await screen.findByText("openai: stored")).toBeInTheDocument();
-    expect(screen.getByText("anthropic: not set")).toBeInTheDocument();
+    // In words, not the keychain's names: "OpenAI key · Stored".
+    const openai = (await screen.findByText("OpenAI key")).parentElement as HTMLElement;
+    expect(await within(openai).findByText("Stored")).toBeInTheDocument();
+    const anthropic = screen.getByText("Anthropic key").parentElement as HTMLElement;
+    expect(within(anthropic).getByText("Not set")).toBeInTheDocument();
     const key = screen.getByLabelText("anthropic key or token");
     expect(key).toHaveAttribute("type", "password");
     await userEvent.type(key, "sk-ant-api03-x");
@@ -295,6 +359,54 @@ describe("sandbox view", () => {
     expect(api.setTakeover).toHaveBeenCalledWith("a", true);
     await userEvent.click(await screen.findByRole("button", { name: "Hand back" }));
     expect(api.setTakeover).toHaveBeenLastCalledWith("a", false);
+  });
+
+  it("shows the agent stopped banner with a restart instead of Take over", async () => {
+    const api = fakeApi([sandbox({ harness: "codex" })]);
+    api.agentStatus = vi.fn(async () => "exited" as const);
+    await open(api);
+    const banner = await screen.findByRole("status");
+    expect(banner).toHaveTextContent("codex has stopped");
+    expect(screen.queryByRole("button", { name: "Take over" })).not.toBeInTheDocument();
+    await userEvent.click(within(banner).getByRole("button", { name: "Restart agent" }));
+    expect(api.restartAgent).toHaveBeenCalledWith("a");
+  });
+
+  it("shows logs as plain text, without terminal control codes", async () => {
+    const api = fakeApi([sandbox()]);
+    api.logs = vi.fn(async () => ["\x1b[34mhello\x1b[m\x1b[K\r\n", "world\n"]);
+    await open(api);
+    await userEvent.click(screen.getByRole("tab", { name: "Logs" }));
+    await waitFor(() => expect(document.querySelector("pre")?.textContent).toBe("hello\nworld\n"));
+  });
+
+  it("opens Files at /workspace, falls back to the root, and hides microsandbox's own folder", async () => {
+    const api = fakeApi([sandbox()]);
+    api.listDir = vi.fn(async (_name: string, path: string) => {
+      if (path === "/workspace") throw new Error("not found");
+      return [
+        { path: "/etc", dir: true },
+        { path: "/bin", dir: false, link: true },
+        { path: "/.msb", dir: true },
+      ];
+    });
+    await open(api);
+    await userEvent.click(screen.getByRole("tab", { name: "Files" }));
+    expect(await screen.findByText(/etc/)).toBeInTheDocument();
+    expect(api.listDir).toHaveBeenCalledWith("a", "/workspace");
+    expect(screen.queryByText(/\.msb/)).not.toBeInTheDocument();
+    // A link opens as a folder when it lists as one.
+    await userEvent.click(screen.getByRole("button", { name: "🔗 bin" }));
+    expect(api.listDir).toHaveBeenLastCalledWith("a", "/bin");
+  });
+
+  it("says the VNC port is the desktop instead of offering it as a page", async () => {
+    await open(fakeApi([sandbox({ template: "desktop", ports: [{ guest: 5900, host: 5901 }] })]));
+    await userEvent.click(screen.getByRole("tab", { name: "Ports" }));
+    expect(screen.getByText(/Desktop \(VNC\)/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Desktop tab" }));
+    expect(screen.getByRole("tab", { name: "Desktop", selected: true })).toBeInTheDocument();
   });
 
   it("has no Take over and no activity feed for a plain sandbox", async () => {

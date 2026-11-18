@@ -1,22 +1,27 @@
 import { type DragEvent, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { plainText } from "./ansi.ts";
 import type { Api, DirEntry, Sandbox } from "./api.ts";
 import { Button } from "./components/ui/button.tsx";
 import { Card } from "./components/ui/card.tsx";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs.tsx";
 import { Desktop } from "./Desktop.tsx";
-import { StatusDot } from "./Home.tsx";
+import { StatusDot, useAgentStatus } from "./Home.tsx";
 import { cn } from "./lib/utils.ts";
 import { Terminal } from "./Terminal.tsx";
 
-type Props = { api: Api; sandbox: Sandbox; initialTab?: string; onBack(): void };
+type Props = { api: Api; sandbox: Sandbox; initialTab?: string; onBack(): void; onRestartAgent?(): void };
+
+/** Guest ports Beambox itself publishes for the desktop, said in words instead of offered as a web page. */
+const DESKTOP_PORTS: Record<number, string> = { 5900: "Desktop (VNC): shown in the Desktop tab" };
 const showError = (error: unknown) => void toast.error(String(error));
 
-export function SandboxView({ api, sandbox: s, initialTab = "terminal", onBack }: Props) {
+export function SandboxView({ api, sandbox: s, initialTab = "terminal", onBack, onRestartAgent }: Props) {
   const [tab, setTab] = useState(initialTab);
   const [openPorts, setOpenPorts] = useState<number[]>([]);
   const [takenOver, setTakenOver] = useState(false);
   const agent = s.harness !== null && s.status === "running";
+  const agentStatus = useAgentStatus(api, s);
   useEffect(() => {
     if (agent) void api.takeover(s.name).then(setTakenOver, () => {});
   }, [api, s.name, agent]);
@@ -36,18 +41,32 @@ export function SandboxView({ api, sandbox: s, initialTab = "terminal", onBack }
         <Button variant="ghost" size="sm" onClick={onBack}>
           ← Sandboxes
         </Button>
-        <StatusDot status={s.status} />
+        <StatusDot status={s.status} agent={agentStatus} />
         <h1 className="font-semibold text-xl">{s.name}</h1>
         <span className="mr-auto text-muted-foreground text-sm">
           {s.harness ? `${s.harness} · ${s.template}` : s.template}
         </span>
         {/* Take over freezes the agent (SIGSTOP) so you can use the terminal and desktop; Hand back resumes it. */}
-        {agent && (
+        {agent && agentStatus !== "exited" && (
           <Button variant={takenOver ? "destructive" : "outline"} onClick={toggleTakeover}>
             {takenOver ? "Hand back" : "Take over"}
           </Button>
         )}
       </header>
+      {agentStatus === "exited" && (
+        <div
+          role="status"
+          className="flex items-center gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm"
+        >
+          <span className="mr-auto">
+            {s.harness} has stopped, for example because its sign-in timed out. The terminal is a plain shell
+            now.
+          </span>
+          <Button size="sm" onClick={onRestartAgent}>
+            Restart agent
+          </Button>
+        </div>
+      )}
       <Tabs value={tab} onValueChange={setTab} className="flex min-h-0 flex-1 flex-col gap-2">
         <TabsList>
           <TabsTrigger value="terminal">Terminal</TabsTrigger>
@@ -64,12 +83,14 @@ export function SandboxView({ api, sandbox: s, initialTab = "terminal", onBack }
         <TabsContent value="terminal" className="overflow-hidden rounded-lg bg-black p-2">
           {running ? <Terminal api={api} name={s.name} /> : needsRunning}
         </TabsContent>
-        <TabsContent value="files">{running ? <Files api={api} name={s.name} /> : needsRunning}</TabsContent>
+        <TabsContent value="files">
+          {running ? <Files api={api} name={s.name} start="/workspace" /> : needsRunning}
+        </TabsContent>
         <TabsContent value="logs">
           <Logs api={api} name={s.name} />
         </TabsContent>
         <TabsContent value="ports">
-          <Ports sandbox={s} onOpen={openPort} />
+          <Ports sandbox={s} onOpen={openPort} onDesktop={() => setTab("desktop")} />
         </TabsContent>
         {s.template === "desktop" && (
           <TabsContent value="desktop" className="overflow-hidden rounded-lg">
@@ -93,12 +114,29 @@ export function SandboxView({ api, sandbox: s, initialTab = "terminal", onBack }
 const join = (dir: string, name: string) => `${dir.replace(/\/$/, "")}/${name}`;
 const basename = (path: string) => path.split("/").filter(Boolean).pop() ?? path;
 
-function Files({ api, name }: { api: Api; name: string }) {
-  const [path, setPath] = useState("/");
+/** Hidden from the root: microsandbox's own files, not the sandbox's. */
+const HIDDEN = ["/.msb"];
+
+function Files({ api, name, start }: { api: Api; name: string; start: string }) {
+  const [path, setPath] = useState(start);
   const [entries, setEntries] = useState<DirEntry[]>([]);
   const [dragging, setDragging] = useState(false);
-  const load = useCallback(() => void api.listDir(name, path).then(setEntries, showError), [api, name, path]);
+  const load = useCallback(
+    () =>
+      void api.listDir(name, path).then(
+        (all) => setEntries(all.filter((e) => !HIDDEN.includes(join(path, basename(e.path))))),
+        // A start folder that isn't there (no /workspace) falls back to the root.
+        (error) => (path === start && start !== "/" ? setPath("/") : showError(error)),
+      ),
+    [api, name, path, start],
+  );
   useEffect(load, [load]);
+  // A link may lead to a folder (Debian's /bin → usr/bin): open it as one if it lists, else download it.
+  const openLink = (target: string) =>
+    void api.listDir(name, target).then(
+      () => setPath(target),
+      () => download(target),
+    );
 
   const download = (file: string) =>
     void api.readFile(name, file).then((bytes) => {
@@ -141,17 +179,23 @@ function Files({ api, name }: { api: Api; name: string }) {
         <code>{path}</code>
         <span className="ml-auto text-muted-foreground text-xs">Drop files here to upload</span>
       </div>
+      {entries.length === 0 && (
+        <p className="px-2 py-1 text-muted-foreground">This folder is empty. Drop files here to add some.</p>
+      )}
       <ul>
         {entries.map((e) => (
           <li key={e.path}>
             <button
               type="button"
               className="w-full rounded px-2 py-1 text-left hover:bg-muted"
-              onClick={() =>
-                e.dir ? setPath(join(path, basename(e.path))) : download(join(path, basename(e.path)))
-              }
+              onClick={() => {
+                const target = join(path, basename(e.path));
+                if (e.dir) setPath(target);
+                else if (e.link) openLink(target);
+                else download(target);
+              }}
             >
-              {e.dir ? "📁" : "📄"} {basename(e.path)}
+              {e.dir ? "📁" : e.link ? "🔗" : "📄"} {basename(e.path)}
             </button>
           </li>
         ))}
@@ -174,26 +218,48 @@ function Logs({ api, name }: { api: Api; name: string }) {
   }, [lines]);
   return (
     <Card className="h-full overflow-y-auto p-3">
-      <pre className="whitespace-pre-wrap font-mono text-xs">{lines.join("")}</pre>
+      {/* The log is the terminal's raw output: shown as the text it drew, without its control codes. */}
+      <pre className="whitespace-pre-wrap font-mono text-xs">{plainText(lines.join(""))}</pre>
       <div ref={end} />
     </Card>
   );
 }
 
-function Ports({ sandbox, onOpen }: { sandbox: Sandbox; onOpen(host: number): void }) {
-  if (sandbox.ports.length === 0)
-    return (
-      <p className="p-4 text-muted-foreground text-sm">No published ports. Add some under New sandbox ▾.</p>
-    );
+function Ports({
+  sandbox,
+  onOpen,
+  onDesktop,
+}: {
+  sandbox: Sandbox;
+  onOpen(host: number): void;
+  onDesktop(): void;
+}) {
+  const desktop = (guest: number) => sandbox.template === "desktop" && DESKTOP_PORTS[guest];
+  const own = sandbox.ports.filter((p) => !desktop(p.guest));
   return (
     <ul className="flex flex-col gap-2">
+      {own.length === 0 && (
+        <li className="py-2 text-muted-foreground text-sm">
+          {sandbox.ports.length ? "No other published ports." : "No published ports."} Add some under New
+          sandbox ▾.
+        </li>
+      )}
       {sandbox.ports.map((p) => (
         <li key={p.guest} className="flex items-center gap-3 text-sm">
           <span className="text-muted-foreground">guest {p.guest} →</span>
           <code>127.0.0.1:{p.host}</code>
-          <Button size="sm" variant="outline" onClick={() => onOpen(p.host)}>
-            Open
-          </Button>
+          {desktop(p.guest) ? (
+            <>
+              <span className="text-muted-foreground text-xs">{desktop(p.guest)}</span>
+              <Button size="sm" variant="ghost" onClick={onDesktop}>
+                Desktop tab
+              </Button>
+            </>
+          ) : (
+            <Button size="sm" variant="outline" onClick={() => onOpen(p.host)}>
+              Open
+            </Button>
+          )}
         </li>
       ))}
     </ul>

@@ -120,6 +120,23 @@ impl SandboxBackend for MicroBackend {
         Ok(microsandbox::Snapshot::get(snapshot).await.is_ok())
     }
 
+    async fn list_snapshots(&self) -> Result<Vec<String>> {
+        let all = microsandbox::Snapshot::list().await.map_err(err)?;
+        // A handle's name is the member alone: `<group>:<member>` is what lookups and removal take.
+        Ok(all
+            .iter()
+            .filter_map(|s| match (s.group(), s.name()) {
+                (Some(group), Some(member)) if !member.contains(':') => Some(format!("{group}:{member}")),
+                (_, name) => name.map(str::to_string),
+            })
+            .collect())
+    }
+
+    async fn remove_snapshot(&self, snapshot: &str) -> Result<()> {
+        // Not forced: microsandbox refuses a snapshot that's in use or has child snapshots.
+        microsandbox::Snapshot::remove(snapshot, false).await.map_err(err)
+    }
+
     async fn delete(&self, name: &str) -> Result<()> {
         Sandbox::get(name).await.map_err(err)?.destroy().await.map_err(err)
     }
@@ -148,7 +165,11 @@ impl SandboxBackend for MicroBackend {
 
     async fn list_dir(&self, name: &str, path: &str) -> Result<Vec<DirEntry>> {
         let entries = connect(name).await?.fs().list(path).await.map_err(err)?;
-        Ok(entries.into_iter().map(|e| DirEntry { path: e.path, dir: matches!(e.kind, FsEntryKind::Directory) }).collect())
+        Ok(entries.into_iter().map(|e| DirEntry {
+                path: e.path,
+                dir: matches!(e.kind, FsEntryKind::Directory),
+                link: matches!(e.kind, FsEntryKind::Symlink),
+            }).collect())
     }
 
     async fn logs(&self, name: &str) -> Result<Vec<String>> {
@@ -176,6 +197,16 @@ mod tests {
         // A made-up key: the harness starts, it just can't reach the API.
         let secrets = Arc::new(FakeSecrets::with("anthropic", "sk-ant-api03-not-a-real-key"));
         Core::new(Arc::new(MicroBackend), secrets, std::env::temp_dir())
+    }
+
+    #[tokio::test]
+    #[ignore = "reads the real snapshot store"]
+    async fn real_snapshot_names_are_the_ones_lookups_take() {
+        let names = MicroBackend.list_snapshots().await.unwrap();
+        for name in &names {
+            assert!(name.contains(':'), "{name} has no group");
+            assert!(MicroBackend.has_snapshot(name).await.unwrap(), "{name} isn't found by its own name");
+        }
     }
 
     #[tokio::test]

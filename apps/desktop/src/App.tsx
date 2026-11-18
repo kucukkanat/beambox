@@ -2,7 +2,7 @@ import { MotionConfig } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
 import { Toaster, toast } from "sonner";
 import type { Api, CreateOpts, Sandbox, Status } from "./api.ts";
-import { Home } from "./Home.tsx";
+import { Home, type Pending } from "./Home.tsx";
 import { HypervisorCard } from "./HypervisorCard.tsx";
 import { spring, useReducedMotion } from "./motion.ts";
 import { SandboxView } from "./SandboxView.tsx";
@@ -14,6 +14,8 @@ export type Actions = {
   fork(name: string): void;
   snapshot(name: string): void;
   remove(name: string): void;
+  /** Start an agent sandbox's harness again after it stopped, and show its terminal. */
+  restartAgent(name: string): void;
 };
 
 const UNDO_MS = 5000;
@@ -40,6 +42,8 @@ export function App({ api }: { api: Api }) {
   const reduced = useReducedMotion();
   const [sandboxes, setSandboxes] = useState<Sandbox[]>([]);
   const [deleting, setDeleting] = useState<string[]>([]);
+  // Creates still booting: a card for each until its sandbox shows up in the list.
+  const [pending, setPending] = useState<Pending[]>([]);
   // `n` remounts the view, so a repeated `beambox desktop` request switches back to the Desktop tab.
   const [opened, setOpened] = useState<{ name: string; tab: string; n: number } | null>(null);
   const openSandbox = useCallback(
@@ -71,6 +75,10 @@ export function App({ api }: { api: Api }) {
   const actions: Actions = {
     create: (opts) => {
       const call = api.create(opts);
+      const id = Date.now() + Math.random();
+      const kind = [opts.harness, opts.desktop && "desktop"].filter(Boolean).join(" with a ") || "sandbox";
+      setPending((all) => [...all, { id, label: opts.name ? `${opts.name} · ${kind}` : kind }]);
+      void call.then(refresh, () => {}).finally(() => setPending((all) => all.filter((p) => p.id !== id)));
       // The first sandbox of each kind builds its snapshot; later ones boot from it in seconds. The toast counts
       // the seconds, so a first build of a minute or two doesn't look stuck.
       const harness = opts.harness;
@@ -116,6 +124,12 @@ export function App({ api }: { api: Api }) {
       run(api.stop(name));
     },
     fork: (name) => run(api.fork(name)),
+    restartAgent: (name) => {
+      void api.restartAgent(name).then(() => {
+        toast.success(`Restarted the agent in ${name}`);
+        openSandbox(name, "terminal");
+      }, showError);
+    },
     snapshot: (name) => void api.snapshot(name).then((s) => toast.success(`Saved snapshot ${s}`), showError),
     remove: (name) => {
       setDeleting((all) => [...all, name]);
@@ -154,12 +168,14 @@ export function App({ api }: { api: Api }) {
             initialTab={opened.tab}
             api={api}
             sandbox={open}
+            onRestartAgent={() => actions.restartAgent(open.name)}
             onBack={() => setOpened(null)}
           />
         ) : (
           <Home
             api={api}
             sandboxes={sandboxes.filter((s) => !deleting.includes(s.name))}
+            pending={pending}
             actions={actions}
             onOpen={openSandbox}
           />

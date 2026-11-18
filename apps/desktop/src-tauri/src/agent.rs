@@ -211,7 +211,10 @@ pub fn agent_setup(harness: &Harness, desktop: bool) -> String {
 pub fn terminal_command(harness: Option<&str>) -> Vec<String> {
     let args: &[&str] = match harness {
         Some(_) => &["/bin/sh", "-c", "tmux attach -t agent 2>/dev/null || exec /bin/sh -l"],
-        None => &["/bin/sh", "-l"],
+        // bash when the image has it (desktops do), for its prompt and line editing; Alpine has only sh. The window
+        // sends its size just after opening, and bash loses its first prompt to that resize, so it starts a moment
+        // later, at the right size (exec sessions can't be given a size up front).
+        None => &["/bin/sh", "-c", "sleep 0.2; command -v bash >/dev/null && exec bash -l || exec /bin/sh -l"],
     };
     args.iter().map(|a| a.to_string()).collect()
 }
@@ -398,7 +401,7 @@ mod tests {
 
     #[test]
     fn the_terminal_joins_the_agent_session_only_in_agent_sandboxes() {
-        assert_eq!(terminal_command(None), ["/bin/sh", "-l"]);
+        assert!(terminal_command(None)[2].ends_with("command -v bash >/dev/null && exec bash -l || exec /bin/sh -l"));
         assert!(terminal_command(Some("codex"))[2].starts_with("tmux attach -t agent"));
     }
 
