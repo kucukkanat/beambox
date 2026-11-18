@@ -10,6 +10,7 @@
     "dev:web": "vite",
     "build": "npm run build -w @repo/sandbox-mcp && node scripts/fetch-runtime.mjs && tauri build --config src-tauri/tauri.runtime.conf.json",
     "build:web": "vite build",
+    "release:macos": "node --env-file-if-exists=.env scripts/release-macos.mjs",
     "typecheck": "tsc -p tsconfig.json && node scripts/cargo.mjs check --all-targets",
     "test": "vitest run && node scripts/cargo.mjs test",
     "beambox": "node scripts/beambox.mjs",

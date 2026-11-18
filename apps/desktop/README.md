@@ -75,7 +75,7 @@ Beambox desktop: a Tauri 2 app that gives each AI agent its own computer, a micr
 | `src-tauri/src/paths.rs`, `hypervisor.rs`, `ports.rs` | Bundled runtime paths, hypervisor check, port picking |
 | `images/base/Dockerfile` | Base template image (≤ 10 MB unpacked) |
 | `../../packages/desktop-image/` | The desktop container the app builds desktop and agent desktop sandboxes on (see [Desktop image](#desktop-image)) |
-| `scripts/` | `fetch-runtime.mjs`, `cargo.mjs` (bundles `apps/sandbox-mcp`, then runs cargo even if `~/.cargo/bin` isn't on PATH) |
+| `scripts/` | `fetch-runtime.mjs`, `release-macos.mjs`, `cargo.mjs` (bundles `apps/sandbox-mcp`, then runs cargo even if `~/.cargo/bin` isn't on PATH) |
 
 ## How it fits together
 
@@ -108,6 +108,7 @@ Beambox desktop: a Tauri 2 app that gives each AI agent its own computer, a micr
 ```bash
 npm run dev -w @repo/desktop          # fetch runtime, then tauri dev (Vite on :1420)
 npm run build -w @repo/desktop        # fetch runtime, then tauri build (.dmg / .AppImage + .deb / .msi)
+npm run release:macos -w @repo/desktop  # signed, notarized .dmg (see Releasing for macOS)
 npm test -w @repo/desktop             # Vitest + cargo test
 npm run typecheck -w @repo/desktop    # tsc + cargo check
 npm run -s beambox -w @repo/desktop -- list  # rebuild, then run the CLI: never a stale binary
@@ -119,22 +120,27 @@ start points `CARGO_TARGET_DIR` at the main checkout's `src-tauri/target`, so de
 
 Prerequisites for building: Node 24+, Rust (rustup, stable) and
 [Tauri's system dependencies](https://tauri.app/start/prerequisites/) (Xcode Command Line Tools on macOS;
-WebKitGTK etc. on Linux; WebView2 + MSVC on Windows). No environment variables are needed.
+WebKitGTK etc. on Linux; WebView2 + MSVC on Windows). Only `release:macos` needs environment variables.
 
 ## Releasing for macOS
 
-`.github/workflows/desktop-app.yml` builds the app on a GitHub macOS runner for Apple Silicon only, because the
-microsandbox runtime ships for arm64 only on macOS. It signs the app with a Developer ID, notarizes and staples it, and
-then checks it with `spctl`. Run it by hand (Actions → desktop-app → Run workflow) to get the `.dmg` as a workflow
-artifact, or push a tag to get a draft release with the `.dmg` attached:
+`npm run release:macos -w @repo/desktop` (`scripts/release-macos.mjs`) makes a release build for Apple Silicon
+only, because the microsandbox runtime ships for arm64 only on macOS. It signs the app with a Developer ID, notarizes
+and staples it, then checks it with `spctl`, and prints the `.dmg`'s path. Tauri signs the app and the `msb` sidecar
+with `Entitlements.plist`, and the script checks that `msb` kept the hypervisor entitlement it needs to run microVMs.
+Tauri copies resources as they are, though, so the script signs `libkrunfw` itself first: notarization rejects a
+bundle with any unsigned binary in it.
+
+**Locally:** install a **Developer ID Application** certificate in your login keychain (developer.apple.com →
+Certificates), copy `.env.example` to `.env` and fill it in. `.env` is gitignored.
+
+**On GitHub:** `.github/workflows/desktop-app.yml` runs the same script on a macOS runner, with the certificate in a
+throwaway keychain. Run it by hand (Actions → desktop-app → Run workflow) to get the `.dmg` as a workflow artifact, or
+push a tag to get a draft release with the `.dmg` attached:
 
 ```bash
 git tag app-v0.1.0 && git push origin app-v0.1.0   # keep it in step with "version" in tauri.conf.json
 ```
-
-Tauri signs the app and the `msb` sidecar with `Entitlements.plist`, and the workflow checks that `msb` kept the
-hypervisor entitlement it needs to run microVMs. Tauri copies resources as they are, though, so the workflow signs
-`libkrunfw` itself before bundling: notarization rejects a bundle with any unsigned binary in it.
 
 Repository secrets (Settings → Secrets and variables → Actions), all from an Apple Developer Program account:
 

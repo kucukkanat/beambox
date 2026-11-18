@@ -29,8 +29,8 @@ jobs:
           workspaces: apps/desktop/src-tauri
       - run: npm ci
 
-      # A throwaway keychain holding the Developer ID certificate, so the runtime library can be signed before
-      # Tauri bundles it (Tauri signs the app and the msb sidecar itself, but copies resources as they are).
+      # A throwaway keychain holding the Developer ID certificate, which apps/desktop/scripts/release-macos.mjs and
+      # Tauri sign with (a local release uses the login keychain instead).
       - name: Import the signing certificate
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -48,29 +48,12 @@ jobs:
           rm "$RUNNER_TEMP/cert.p12"
           security find-identity -v -p codesigning "$keychain" | grep -F "$APPLE_SIGNING_IDENTITY"
 
-      - name: Fetch and sign the microsandbox runtime
-        working-directory: apps/desktop
-        run: |
-          node scripts/fetch-runtime.mjs
-          codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" src-tauri/binaries/runtime/*.dylib
-
-      - name: Build, sign and notarize
+      - name: Build, sign, notarize and check
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: npm run build -w @repo/desktop -- --bundles app,dmg
-
-      # msb runs the microVMs, so it must keep the hypervisor entitlement after Tauri re-signs it.
-      - name: Verify
-        working-directory: apps/desktop/src-tauri/target/release/bundle
-        run: |
-          app=macos/Beambox.app
-          codesign --verify --deep --strict --verbose=2 "$app"
-          codesign -d --entitlements - "$app/Contents/MacOS/msb" | grep -q com.apple.security.hypervisor
-          xcrun stapler validate "$app"
-          spctl --assess --type execute --verbose "$app"
-          ls dmg/*.dmg
+        run: npm run release:macos -w @repo/desktop
 
       - uses: actions/upload-artifact@v4
         with:
