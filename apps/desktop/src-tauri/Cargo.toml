@@ -8,7 +8,8 @@ publish = false
 
 [lib]
 name = "beambox_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# Only the desktop binary links this; staticlib and cdylib are for Tauri on mobile.
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -42,3 +43,9 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# Smaller release binary: no symbols, whole-program optimisation. Dev builds are unchanged.
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
