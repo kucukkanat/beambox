@@ -1,7 +1,7 @@
 # @repo/desktop-image
 
-The Beambox desktop as a container image: a macOS-like Linux desktop over VNC (openbox, a top bar, a dock and
-Chromium, plus a file manager) on `debian:trixie-slim`, for `linux/amd64` and `linux/arm64`. It is published as
+The Beambox desktop as a container image: a Linux desktop over VNC (openbox and Chromium, plus a file manager,
+with a macOS-like top bar and dock one switch away) on `debian:trixie-slim`, for `linux/amd64` and `linux/arm64`. It is published as
 `ghcr.io/OWNER/beambox-desktop` (`OWNER` stays a placeholder until the GitHub repository exists).
 
 Beambox ([`apps/desktop`](../../apps/desktop)) doesn't pull the image; it runs the same `install.sh` in two steps.
@@ -63,6 +63,11 @@ One consequence: a release that changes only files keeps the Debian packages it 
 - **openbox** with the `Beambox` theme (`openbox/`): dark title bars, centred Inter titles, and traffic-light
   buttons on the left (`CIML`), drawn as coloured circle bitmaps. No screen margins: openbox applies them to the
   dock too, which lifted it off the bottom edge. The dock's own strut keeps new and maximised windows clear of it.
+- **Bare by default.** The top bar, the dock and the window shadows below are installed but off: each costs memory
+  and CPU in every box, and agents don't use them. `beambox-dock on|off|toggle` switches them for one box (the
+  desktop's right-click menu has **Dock and top bar on/off**), and the choice is the file `/etc/beambox/dock` on the
+  box's disk, so it lasts across restarts and copies. Super+Space (`rofi`) and the right-click menu open apps without
+  them.
 - **A `tint2` top bar** (`tint2rc`): "● Beambox" opens `rofi` (also Super+Space), plus the active window's name. No
   clock, because the sandbox runs on UTC.
 - **The Plank dock** (`plank.dconf`): the browser, Files and Terminal, pinned only, magnified on hover.
@@ -78,8 +83,8 @@ One consequence: a release that changes only files keeps the Debian packages it 
 - **`desktop-watch`:** runs in the background and keeps the background and the dock fitted to the screen. The screen
   changes size whenever the viewer resizes it (noVNC's `resize=remote`, a resized VNC window), and neither follows on
   its own: X tiles the old background across the new space, and Plank stays centred on the old width. Every second
-  it checks the size with `xrandr`, then redraws the background and restarts Plank when the size has changed, or
-  when Plank isn't running. It waits for the old Plank to exit first: a new one started while the old one is still on
+  it checks the size with `xrandr`, then redraws the background and, while the dock is on, restarts Plank when the
+  size has changed, or when Plank isn't running. It waits for the old Plank to exit first: a new one started while the old one is still on
   the session bus can't register and exits, so two quick resizes used to leave no dock.
   - **Wallpaper:** right-click an image in Files and choose **Set as Wallpaper**, or run `set-wallpaper <image>`.
     Either copies it to `/root/.config/beambox/wallpaper`, and within a second it replaces the gradient, cropped to
@@ -129,7 +134,8 @@ It works against any desktop: Docker's, or a Beambox sandbox's host port.
 `.github/workflows/desktop-image.yml` runs only when you push a `desktop-v<version>` tag:
 1. Builds each architecture with buildx on its own native runner (`ubuntu-24.04`, `ubuntu-24.04-arm`).
 2. Smoke-tests it: runs the container, waits for `vnc-frame.ts` to see at least 20% non-black, then requires
-   Xvnc, openbox, tint2 and Plank to be running.
+   Xvnc and openbox to be running and the top bar and dock not to be, then switches them on and requires tint2 and
+   Plank.
 3. Pushes each architecture by digest and merges them into `:<version>` and `:latest`, with the built-in
    `GITHUB_TOKEN`.
 

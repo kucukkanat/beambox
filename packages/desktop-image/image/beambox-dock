@@ -1,0 +1,30 @@
+#!/bin/sh
+# Switches this box's dock, top bar and window shadows on or off: `beambox-dock on|off|toggle` (the desktop's
+# right-click menu runs toggle). Off is the default, so a box's desktop is just Xvnc, openbox and its windows.
+# Everything stays installed, so switching is instant. The choice is the file $DOCK, on the box's disk, so it lasts
+# across restarts and copies. desktop-watch starts and refits Plank while the file is there.
+export DISPLAY=${DISPLAY:-:0}
+DOCK=${DOCK:-/etc/beambox/dock}
+want=$1
+if [ "$want" = toggle ]; then
+  if [ -e "$DOCK" ]; then want=off; else want=on; fi
+fi
+case $want in
+on)
+  mkdir -p "$(dirname "$DOCK")" && touch "$DOCK"
+  # Shadows, and the see-through dock and top bar. (picom loses track of windows under Xvnc.)
+  pgrep -x xcompmgr >/dev/null || setsid xcompmgr -c -C -r 12 -o 0.45 -l -14 -t -12 >/dev/null 2>&1 &
+  pgrep -x tint2 >/dev/null || setsid tint2 -c /etc/xdg/tint2/tint2rc >/tmp/tint2.log 2>&1 &
+  ;;
+off)
+  rm -f "$DOCK"
+  pkill -x xcompmgr
+  pkill -x tint2
+  pkill -x plank
+  ;;
+*)
+  echo "usage: beambox-dock on|off|toggle" >&2
+  exit 2
+  ;;
+esac
+exit 0

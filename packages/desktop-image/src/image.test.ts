@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -94,8 +94,9 @@ if [ "$5" = died ]; then rm -f "${dir}/running"; fi`;
   bin("pgrep", `[ -f "${dir}/running" ]`);
   try {
     execFileSync(join(dir, "next"));
+    writeFileSync(join(dir, "dock"), "");
     execFileSync("sh", [new URL("../image/desktop-watch", import.meta.url).pathname], {
-      env: { PATH: `${dir}:/usr/bin:/bin`, WALLPAPER: wallpaper },
+      env: { PATH: `${dir}:/usr/bin:/bin`, WALLPAPER: wallpaper, DOCK: join(dir, "dock") },
       timeout: 10_000,
     });
     const gradient = "hsetroot -add #2b4c7e -add #1a2238 -add #0d1117 -gradient 160";
@@ -118,6 +119,72 @@ if [ "$5" = died ]; then rm -f "${dir}/running"; fi`;
         "pkill -x plank", // the dock died: it comes back
       ],
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it("desktop-watch leaves the dock off unless the box has it switched on", () => {
+  const dir = mkdtempSync(join(tmpdir(), "desktop-watch-"));
+  const bin = (name: string, body: string) => {
+    writeFileSync(join(dir, name), `#!/bin/sh\n${body}\n`);
+    chmodSync(join(dir, name), 0o755);
+  };
+  // One screen size, then X exits.
+  bin(
+    "xrandr",
+    `[ -f "${dir}/screen" ] || exit 1; echo "Screen 0: current 800 x 600, maximum 16384 x 16384"`,
+  );
+  bin("sleep", `rm -f "${dir}/screen"`);
+  bin("hsetroot", "true");
+  bin("stat", "true");
+  for (const tool of ["plank", "pkill", "setsid"]) bin(tool, `echo ${tool} >> "${dir}/calls"`);
+  bin("pgrep", "exit 1");
+  try {
+    writeFileSync(join(dir, "screen"), "");
+    execFileSync("sh", [new URL("../image/desktop-watch", import.meta.url).pathname], {
+      env: { PATH: `${dir}:/usr/bin:/bin`, DOCK: join(dir, "no-dock") },
+      timeout: 10_000,
+    });
+    assert.equal(readFileSync(join(dir, "calls"), { encoding: "utf8", flag: "a+" }), "");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it("beambox-dock switches the top bar and shadows on and off, and remembers it on the box's disk", () => {
+  const dir = mkdtempSync(join(tmpdir(), "beambox-dock-"));
+  const bin = (name: string, body: string) => {
+    writeFileSync(join(dir, name), `#!/bin/sh\n${body}\n`);
+    chmodSync(join(dir, name), 0o755);
+  };
+  bin("setsid", `echo "start $1" >> "${dir}/calls"`);
+  bin("pkill", `echo "stop $2" >> "${dir}/calls"`);
+  bin("pgrep", "exit 1");
+  const dock = join(dir, "etc", "dock");
+  const run = (arg: string) =>
+    execFileSync("sh", [new URL("../image/beambox-dock", import.meta.url).pathname, arg], {
+      env: { PATH: `${dir}:/usr/bin:/bin`, DOCK: dock },
+    });
+  const lines = (path: string) => readFileSync(path, "utf8").split("\n").filter(Boolean);
+  // `on` starts both in the background: wait (up to 2 s) until both have been called.
+  const calls = (count: number) => {
+    for (
+      let i = 0;
+      i < 40 && !(existsSync(join(dir, "calls")) && lines(join(dir, "calls")).length >= count);
+      i++
+    )
+      execFileSync("/bin/sleep", ["0.05"]);
+    return lines(join(dir, "calls")).sort();
+  };
+  try {
+    run("toggle");
+    assert.ok(existsSync(dock));
+    assert.deepEqual(calls(2), ["start tint2", "start xcompmgr"]);
+    rmSync(join(dir, "calls"));
+    run("toggle");
+    assert.ok(!existsSync(dock));
+    assert.deepEqual(calls(3), ["stop plank", "stop tint2", "stop xcompmgr"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

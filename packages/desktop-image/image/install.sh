@@ -49,6 +49,7 @@ fi
 install -D -m 755 "$src/start-desktop" /usr/local/bin/start-desktop
 install -D -m 755 "$src/beambox-desktop" /usr/local/bin/beambox-desktop
 install -D -m 755 "$src/desktop-watch" /usr/local/bin/desktop-watch
+install -D -m 755 "$src/beambox-dock" /usr/local/bin/beambox-dock
 install -D -m 755 "$src/set-wallpaper" /usr/local/bin/set-wallpaper
 install -D -m 644 "$src/set-wallpaper.desktop" /usr/share/file-manager/actions/set-wallpaper.desktop
 install -D -m 644 "$src/Xresources" /etc/beambox/Xresources
@@ -67,6 +68,9 @@ sed -i 's|<name>sans</name>|<name>Inter</name>|g; s|<size>8</size>|<size>10</siz
 sed -i 's|<keyboard>|<keyboard>\n    <keybind key="W-space"><action name="Execute"><command>rofi -show drun</command></action></keybind>|' \
   /etc/xdg/openbox/rc.xml
 sed -i 's|x-terminal-emulator|xterm|g; s|x-www-browser|chromium|g' /etc/xdg/openbox/menu.xml
+# The dock, top bar and shadows are off by default; the right-click menu switches them for this box.
+sed -i 's|<menu id="root-menu" label="Openbox 3">|&\n  <item label="Dock and top bar on/off"><action name="Execute"><command>beambox-dock toggle</command></action></item>\n  <separator />|' \
+  /etc/xdg/openbox/menu.xml
 # Ours (xterm.desktop, "Terminal") replaces Debian's two, which the app launcher would list as XTerm and UXTerm.
 rm -f /usr/share/applications/debian-xterm.desktop /usr/share/applications/debian-uxterm.desktop
 # Ours (files.desktop, "Files") replaces PCManFM's, and its desktop-icons settings go: openbox draws the background.

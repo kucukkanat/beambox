@@ -140,6 +140,7 @@ const DESKTOP_FILES: &[(&str, &str)] = &[
     ("beambox-desktop", include_str!("../../../../packages/desktop-image/image/beambox-desktop")),
     ("start-desktop", include_str!("../../../../packages/desktop-image/image/start-desktop")),
     ("desktop-watch", include_str!("../../../../packages/desktop-image/image/desktop-watch")),
+    ("beambox-dock", include_str!("../../../../packages/desktop-image/image/beambox-dock")),
     ("set-wallpaper", include_str!("../../../../packages/desktop-image/image/set-wallpaper")),
     ("set-wallpaper.desktop", include_str!("../../../../packages/desktop-image/image/set-wallpaper.desktop")),
     ("Xresources", include_str!("../../../../packages/desktop-image/image/Xresources")),
@@ -404,9 +405,12 @@ mod tests {
         assert!(include_str!("../../../../packages/desktop-image/image/browser-preferences.json").contains("\"custom_chrome_frame\": false"));
         assert!(include_str!("../../../../packages/desktop-image/image/browser-policies.json").contains("\"BrowserSignin\": 0"));
         let start = include_str!("../../../../packages/desktop-image/image/start-desktop");
-        for part in ["Xvnc :0 -geometry 1280x800", "xcompmgr", "tint2 -c /etc/xdg/tint2/tint2rc", "eval \"$(dbus-launch --sh-syntax)\"", "setsid desktop-watch"] {
+        for part in ["Xvnc :0 -geometry 1280x800", "[ -e /etc/beambox/dock ] && beambox-dock on", "eval \"$(dbus-launch --sh-syntax)\"", "setsid desktop-watch"] {
             assert!(start.contains(part), "{part}");
         }
+        // A bare desktop by default: the top bar and shadows start only through beambox-dock, which the menu toggles.
+        assert!(!start.contains("setsid tint2") && !start.contains("setsid xcompmgr"), "{start}");
+        assert!(install.contains("/usr/local/bin/beambox-dock") && install.contains("beambox-dock toggle"));
         // The image's CMD starts the same desktop, then stays in the foreground while Xvnc runs.
         let foreground = include_str!("../../../../packages/desktop-image/image/beambox-desktop");
         assert!(foreground.contains("start-desktop\n") && foreground.contains("while pgrep Xvnc"), "{foreground}");

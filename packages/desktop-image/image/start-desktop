@@ -33,12 +33,11 @@ until xsetroot -solid '#1a2238' -cursor_name left_ptr 2>/dev/null || [ "$i" -ge 
   sleep 0.1
 done
 setsid openbox >/tmp/openbox.log 2>&1 &
-# Window shadows, and see-through dock and top bar. (picom loses track of windows under Xvnc.)
-setsid xcompmgr -c -C -r 12 -o 0.45 -l -14 -t -12 >/dev/null 2>&1 &
-setsid tint2 -c /etc/xdg/tint2/tint2rc >/tmp/tint2.log 2>&1 &
+# The top bar and window shadows only if this box has the dock switched on (beambox-dock; off by default).
+[ -e /etc/beambox/dock ] && beambox-dock on
 # One session bus for the desktop: Plank keeps its settings in dconf, which needs one.
 eval "$(dbus-launch --sh-syntax)"
-# The background and the Plank dock, refitted whenever the screen changes size (desktop-watch).
+# The background, and the Plank dock when it's on, refitted whenever the screen changes size (desktop-watch).
 setsid desktop-watch >/tmp/desktop-watch.log 2>&1 &
 # Copy and paste between the desktop and the app.
 setsid vncconfig -nowin >/dev/null 2>&1 &

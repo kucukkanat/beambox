@@ -5,6 +5,8 @@
 # The background is the image at $WALLPAPER if there is one, cropped to fill the screen, and the gradient otherwise.
 # Copying a new image there takes effect within a second.
 WALLPAPER=${WALLPAPER:-/root/.config/beambox/wallpaper}
+# The dock only runs while this file is there (beambox-dock).
+DOCK=${DOCK:-/etc/beambox/dock}
 background() {
   if [ -s "$WALLPAPER" ]; then
     # -cover crops to fill; older hsetroot builds only have -fill, which stretches.
@@ -22,7 +24,7 @@ while screen=$(xrandr --current 2>/dev/null | sed -n 's/.* current \([0-9]*\) x 
   # The old one must be gone first: a Plank started while the last is still on the session bus can't register
   # there and exits, which two resizes within a second used to cause, leaving no dock. A dock that died for any
   # other reason comes back the same way.
-  if [ "$screen" != "$size" ] || ! pgrep -x plank >/dev/null; then
+  if [ -e "$DOCK" ] && { [ "$screen" != "$size" ] || ! pgrep -x plank >/dev/null; }; then
     pkill -x plank
     i=0
     while pgrep -x plank >/dev/null && [ "$i" -lt 30 ]; do
