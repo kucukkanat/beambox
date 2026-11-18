@@ -96,8 +96,6 @@ export type Api = {
   /** `beambox desktop <name>` while the window is already open. */
   onOpen(handler: (name: string) => void): () => void;
   desktopPort(name: string): Promise<number>;
-  /** Set the desktop's screen to one of Xvnc's sizes, such as 1920x1080. */
-  desktopResize(name: string, width: number, height: number): Promise<void>;
   /** The agent's tmux session in agent sandboxes, a login shell otherwise. */
   terminalOpen(name: string, onData: (data: Uint8Array) => void): Promise<number>;
   terminalInput(id: number, data: string): Promise<void>;
@@ -156,7 +154,6 @@ export const tauriApi: Api = {
     return () => void unlisten.then((stop) => stop());
   },
   desktopPort: (name) => invoke("desktop_port", { name }),
-  desktopResize: (name, width, height) => invoke("desktop_resize", { name, width, height }),
   terminalOpen: (name, onData) => {
     const output = new Channel<number[]>();
     output.onmessage = (bytes) => onData(new Uint8Array(bytes));

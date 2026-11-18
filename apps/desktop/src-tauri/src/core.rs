@@ -378,16 +378,6 @@ impl Core {
         self.start_agent(info, harness, None, env).await
     }
 
-    /// Set the desktop's screen to `width`x`height`, one of the sizes Xvnc lists in `xrandr` (1920x1080 and the
-    /// like). The Desktop tab then scales it to fit, instead of resizing the screen to the window.
-    pub async fn resize_desktop(&self, name: &str, width: u32, height: u32) -> Result<()> {
-        let out = self.backend.exec(name, &format!("DISPLAY=:0 xrandr -s {width}x{height}")).await?;
-        if out.exit_code != 0 {
-            return Err(format!("couldn't set the desktop to {width}x{height}: {}", out.stderr.trim()));
-        }
-        Ok(())
-    }
-
     /// Delete Beambox's own snapshots other than the base one: older versions built one per kind of sandbox (about
     /// 4 GiB each). Sandboxes made from them keep working, as their disks are their own. Returns
     /// what was deleted. A snapshot that can't go yet (say, the head of a group whose other members go later in the
@@ -979,17 +969,6 @@ mod tests {
         assert_eq!(core.agent_status("a").await.unwrap(), "frozen");
         fake.replies.lock().unwrap().insert(takeover_probe(), reply("S\n"));
         assert_eq!(core.agent_status("a").await.unwrap(), "running");
-    }
-
-    #[tokio::test]
-    async fn resizing_the_desktop_picks_an_xvnc_screen_size() {
-        let (fake, core) = core_with(|_| true);
-        core.create(CreateOpts { name: Some("d".into()), desktop: Some(true), ..Default::default() }).await.unwrap();
-        core.resize_desktop("d", 1920, 1080).await.unwrap();
-        assert_eq!(fake.execs.lock().unwrap().last().unwrap().1, "DISPLAY=:0 xrandr -s 1920x1080");
-        // xrandr's own error reaches the person.
-        fake.replies.lock().unwrap().insert("DISPLAY=:0 xrandr -s 1x1".into(), ExecResult { stdout: String::new(), stderr: "Size 1x1 not found\n".into(), exit_code: 1 });
-        assert_eq!(core.resize_desktop("d", 1, 1).await.unwrap_err(), "couldn't set the desktop to 1x1: Size 1x1 not found");
     }
 
     #[tokio::test]

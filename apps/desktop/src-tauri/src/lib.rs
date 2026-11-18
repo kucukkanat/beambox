@@ -263,12 +263,6 @@ fn take_open(app: State<'_, App>) -> Option<String> {
     app.open_at_launch.lock().expect("lock").take()
 }
 
-/// Set the desktop's screen to one of Xvnc's sizes.
-#[tauri::command]
-async fn desktop_resize(app: State<'_, App>, name: String, width: u32, height: u32) -> Result<()> {
-    app.core.resize_desktop(&name, width, height).await
-}
-
 /// Start a WebSocket proxy to the sandbox's VNC port and return its local port.
 #[tauri::command]
 async fn desktop_port(app: State<'_, App>, name: String) -> Result<u16> {
@@ -412,7 +406,6 @@ pub fn run(open: Option<String>) {
             install_cli,
             take_open,
             desktop_port,
-            desktop_resize,
             terminal_open,
             terminal_input,
             terminal_resize,

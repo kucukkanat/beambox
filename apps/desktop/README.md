@@ -55,11 +55,10 @@ Beambox desktop: a Tauri 2 app that gives each AI agent its own computer, a micr
 - **CLI**: the same `beambox` binary run with a command. Everything the window does, from a terminal (see
   [Command line](#command-line)).
 - **Screen** (desktop boxes): noVNC connects to a per-sandbox proxy on 127.0.0.1 that only accepts the app's own webview
-  origin, so other pages on the machine can't reach the VNC server. The Resolution menu in its top-right corner
-  picks **Fit window** (the screen follows the tab, drawn 1:1) or a fixed size from Xvnc's list (`xrandr -s` through
-  the `desktop_resize` command), scaled down to fit so everything looks smaller. The choice is kept, and applied
-  again on every connect. The screen fills the window under the box's header (Save points are a scroll below), and
-  **Full window** (or ⌘⇧F, caught before the box sees it) hides everything else; Esc or ⌘⇧F brings it back.
+  origin, so other pages on the machine can't reach the VNC server. Xvnc resizes its screen to the tab
+  (`resizeSession`), so it's always drawn 1:1. The screen fills the window under the box's header (Save points are
+  a scroll below), and **Full window** (or ⌘⇧F, caught before the box sees it) hides everything else; Esc or ⌘⇧F
+  brings it back.
 
 ## Layout
 
