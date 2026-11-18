@@ -873,8 +873,9 @@ body {
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  overflow-y: auto;
-  padding: 24px 16px 40px;
+  /* The dialog blocks scrolling outside itself, so the sheet fits the window and scrolls inside. */
+  overflow: hidden;
+  padding: 24px 16px;
   pointer-events: none;
 }
 .sheet,
@@ -892,6 +893,12 @@ body {
 }
 .sheet {
   width: min(760px, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.sheet > * {
+  flex-shrink: 0;
 }
 .dialog {
   width: min(480px, 100%);
@@ -1206,6 +1213,12 @@ body {
   flex-wrap: wrap;
   padding-top: 16px;
   border-top: 1px dashed var(--edge);
+  /* Stays in reach while the steps above scroll. */
+  position: sticky;
+  bottom: -22px;
+  margin-bottom: -22px;
+  padding-bottom: 22px;
+  background: var(--chassis);
 }
 .sheet-foot p {
   margin: 0 auto 0 0;
