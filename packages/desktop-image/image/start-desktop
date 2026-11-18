@@ -41,7 +41,8 @@ eval "$(dbus-launch --sh-syntax)"
 setsid desktop-watch >/tmp/desktop-watch.log 2>&1 &
 # Copy and paste between the desktop and the app.
 setsid vncconfig -nowin >/dev/null 2>&1 &
-setsid xterm -geometry 100x28+40+60 >/dev/null 2>&1 &
+# Short enough to clear the dock on a small viewer window.
+setsid xterm -geometry 96x20+40+60 >/dev/null 2>&1 &
 # Return once VNC is listening (up to 5 s), so the Desktop tab can connect as soon as the sandbox is ready.
 i=0
 until netstat -ltn | grep -q ':5900 ' || [ "$i" -ge 50 ]; do

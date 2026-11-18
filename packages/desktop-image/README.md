@@ -11,7 +11,7 @@ Debian itself, so there's one definition of the desktop either way.
 ## Run it
 
 ```bash
-docker run --rm -p 127.0.0.1:5900:5900 ghcr.io/OWNER/beambox-desktop:7
+docker run --rm -p 127.0.0.1:5900:5900 ghcr.io/OWNER/beambox-desktop:8
 ```
 
 Podman takes the same arguments. Then open `vnc://127.0.0.1:5900` in a VNC viewer (macOS Screen Sharing, TigerVNC,
@@ -23,7 +23,7 @@ Remmina).
 ### In a browser (opt-in)
 
 ```bash
-docker run --rm -e WEB_PORT=6080 -p 127.0.0.1:6080:6080 ghcr.io/OWNER/beambox-desktop:7
+docker run --rm -e WEB_PORT=6080 -p 127.0.0.1:6080:6080 ghcr.io/OWNER/beambox-desktop:8
 ```
 
 The log prints a link such as `http://127.0.0.1:6080/vnc.html?autoconnect=1&resize=remote&path=websockify%3Ftoken%3D…`.
@@ -60,7 +60,8 @@ One consequence: a release that changes only files keeps the Debian packages it 
 - **Xvnc:** TigerVNC's `Xvnc` is the X server and the VNC server in one. It resizes to the viewer instead of being
   stretched, and sends changes as they're drawn.
 - **openbox** with the `Beambox` theme (`openbox/`): dark title bars, centred Inter titles, and traffic-light
-  buttons on the left (`CIML`), drawn as coloured circle bitmaps.
+  buttons on the left (`CIML`), drawn as coloured circle bitmaps. An 80 px bottom margin keeps new and maximised
+  windows clear of the dock.
 - **A `tint2` top bar** (`tint2rc`): "● Beambox" opens `rofi` (also Super+Space), plus the active window's name. No
   clock, because the sandbox runs on UTC.
 - **The Plank dock** (`plank.dconf`): the browser, Files and Terminal, pinned only, magnified on hover.
@@ -69,10 +70,14 @@ One consequence: a release that changes only files keeps the Debian packages it 
   - Papirus icons need `librsvg2-common`.
 - **`xcompmgr -c -C`** for shadows and the see-through bar and dock. picom loses track of windows under Xvnc.
 - **Look and feel:** a gradient background (`hsetroot`), dark GTK, and xterm in DejaVu Sans Mono (`Xresources`).
+  WenQuanYi Micro Hei (`fonts-wqy-microhei`, about 5 MB) covers Chinese, Japanese and Korean text in the browser,
+  where the full Noto CJK set would add about 100 MB.
 - **`desktop-watch`:** runs in the background and keeps the background and the dock fitted to the screen. The screen
   changes size whenever the viewer resizes it (noVNC's `resize=remote`, a resized VNC window), and neither follows on
   its own: X tiles the old background across the new space, and Plank stays centred on the old width. Every second
-  it checks the size with `xrandr`, then redraws the background and restarts Plank when the size has changed.
+  it checks the size with `xrandr`, then redraws the background and restarts Plank when the size has changed, or
+  when Plank isn't running. It waits for the old Plank to exit first: a new one started while the old one is still on
+  the session bus can't register and exits, so two quick resizes used to leave no dock.
   - **Wallpaper:** right-click an image in Files and choose **Set as Wallpaper**, or run `set-wallpaper <image>`.
     Either copies it to `/root/.config/beambox/wallpaper`, and within a second it replaces the gradient, cropped to
     fill the screen (`hsetroot -cover`). It stays across restarts and resizes. Delete that file to get the gradient

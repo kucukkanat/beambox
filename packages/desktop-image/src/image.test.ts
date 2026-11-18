@@ -66,12 +66,21 @@ it("desktop-watch refits the background and the dock when the screen changes siz
     chmodSync(join(dir, name), 0o755);
   };
   const wallpaper = join(dir, "wallpaper.png");
-  // Each step: the screen size, and the wallpaper's contents and mtime ("" = none).
-  const steps = ["1114 695 -", "1114 695 -", "2000 783 -", "2000 783 png 5", "2000 783 png 5"];
+  // Each step: the screen size, the wallpaper's contents and mtime ("" = none), and "died" when the dock crashes.
+  const steps = [
+    "1114 695 -",
+    "1114 695 -",
+    "2000 783 -",
+    "2000 783 png 5",
+    "2000 783 png 5 died",
+    "2000 783 png 5",
+  ];
   writeFileSync(join(dir, "steps"), `${steps.join("\n")}\n`);
-  const next = `set -- $(sed -n 1p "${dir}/steps"); sed -i.bak 1d "${dir}/steps"
+  // A real pause first, so the Plank started in the background is up before the next check, as in a real second.
+  const next = `/bin/sleep 0.2; set -- $(sed -n 1p "${dir}/steps"); sed -i.bak 1d "${dir}/steps"
 if [ -z "$1" ]; then rm -f "${dir}/screen"; else echo "$1 $2" > "${dir}/screen"; fi
-if [ "$3" = png ]; then echo "$3" > "${wallpaper}"; echo "$4" > "${dir}/mtime"; fi`;
+if [ "$3" = png ]; then echo "$3" > "${wallpaper}"; echo "$4" > "${dir}/mtime"; fi
+if [ "$5" = died ]; then rm -f "${dir}/running"; fi`;
   bin("next", next);
   bin(
     "xrandr",
@@ -80,7 +89,11 @@ if [ "$3" = png ]; then echo "$3" > "${wallpaper}"; echo "$4" > "${dir}/mtime"; 
   bin("stat", `[ -s "$3" ] && cat "${dir}/mtime"`);
   bin("sleep", `"${dir}/next"`);
   bin("setsid", '"$@"');
-  for (const name of ["hsetroot", "pkill", "plank"]) bin(name, `echo "${name} $*" >> "${dir}/calls"`);
+  bin("hsetroot", `echo "hsetroot $*" >> "${dir}/calls"`);
+  // A Plank that's running until it's killed or dies, which pgrep sees.
+  bin("plank", `echo "plank $*" >> "${dir}/calls"; touch "${dir}/running"`);
+  bin("pkill", `echo "pkill $*" >> "${dir}/calls"; rm -f "${dir}/running"`);
+  bin("pgrep", `[ -f "${dir}/running" ]`);
   try {
     execFileSync(join(dir, "next"));
     execFileSync("sh", [new URL("../image/desktop-watch", import.meta.url).pathname], {
@@ -93,13 +106,18 @@ if [ "$3" = png ]; then echo "$3" > "${wallpaper}"; echo "$4" > "${dir}/mtime"; 
       .split("\n")
       .map((c) => c.trim());
     // Plank starts in the background, so only the order of the rest is fixed.
-    assert.equal(calls.filter((c) => c === "plank").length, 2, "Plank restarts once per size");
+    assert.equal(
+      calls.filter((c) => c === "plank").length,
+      3,
+      "Plank restarts once per size, and when it died",
+    );
     assert.deepEqual(
       calls.filter((c) => c !== "plank"),
       [
         ...[gradient, "pkill -x plank"], // started at 1114x695
         ...[gradient, "pkill -x plank"], // resized to 2000x783
         `hsetroot -cover ${wallpaper}`, // a wallpaper appeared: the dock stays
+        "pkill -x plank", // the dock died: it comes back
       ],
     );
   } finally {

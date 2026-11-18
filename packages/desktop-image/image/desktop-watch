@@ -17,10 +17,18 @@ while screen=$(xrandr --current 2>/dev/null | sed -n 's/.* current \([0-9]*\) x 
   [ -n "$screen" ]; do
   changed=$(stat -c %Y "$WALLPAPER" 2>/dev/null)
   [ "$screen $changed" != "$size $wallpaper" ] && background
-  if [ "$screen" != "$size" ]; then
-    # Plank only works out its position when it starts. Its settings are in dconf, which needs the session bus
-    # start-desktop started. Its output goes to this script's log.
+  # Plank only works out its position when it starts, so a new size restarts it. Its settings are in dconf, which
+  # needs the session bus start-desktop started. Its output goes to this script's log.
+  # The old one must be gone first: a Plank started while the last is still on the session bus can't register
+  # there and exits, which two resizes within a second used to cause, leaving no dock. A dock that died for any
+  # other reason comes back the same way.
+  if [ "$screen" != "$size" ] || ! pgrep -x plank >/dev/null; then
     pkill -x plank
+    i=0
+    while pgrep -x plank >/dev/null && [ "$i" -lt 30 ]; do
+      i=$((i + 1))
+      sleep 0.1
+    done
     setsid plank &
   fi
   size=$screen wallpaper=$changed

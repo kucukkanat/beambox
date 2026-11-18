@@ -32,7 +32,7 @@ FILTERS
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
   apt-get install -y --no-install-recommends tigervnc-standalone-server tigervnc-tools openbox tint2 plank \
-    xcompmgr rofi xterm pcmanfm libfm-modules x11-xserver-utils hsetroot fonts-inter fonts-dejavu-core papirus-icon-theme librsvg2-common \
+    xcompmgr rofi xterm pcmanfm libfm-modules x11-xserver-utils hsetroot fonts-inter fonts-dejavu-core fonts-wqy-microhei papirus-icon-theme librsvg2-common \
     dbus-x11 dconf-cli dconf-gsettings-backend net-tools procps ca-certificates python3 chromium
   # The web desktop (start-desktop's WEB_PORT): noVNC's page and websockify's Python, unpacked from Debian's packages
   # without installing them. Their dependencies (Node.js for noVNC's tools, numpy, Redis and HTTP clients for
@@ -64,6 +64,8 @@ install -D -m 644 "$src/browser-policies.json" /etc/chromium/policies/managed/be
 sed -i 's|<name>Clearlooks</name>|<name>Beambox</name>|; s|<titleLayout>NLIMC</titleLayout>|<titleLayout>CIML</titleLayout>|' \
   /etc/xdg/openbox/rc.xml
 sed -i 's|<name>sans</name>|<name>Inter</name>|g; s|<size>8</size>|<size>10</size>|g' /etc/xdg/openbox/rc.xml
+# Keep the dock's strip free: new windows are placed, and maximised, above it.
+sed -i '/<margins>/,/<\/margins>/s|<bottom>0</bottom>|<bottom>80</bottom>|' /etc/xdg/openbox/rc.xml
 sed -i 's|<keyboard>|<keyboard>\n    <keybind key="W-space"><action name="Execute"><command>rofi -show drun</command></action></keybind>|' \
   /etc/xdg/openbox/rc.xml
 sed -i 's|x-terminal-emulator|xterm|g; s|x-www-browser|chromium|g' /etc/xdg/openbox/menu.xml
