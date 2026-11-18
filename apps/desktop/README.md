@@ -103,6 +103,35 @@ Beambox desktop: a Tauri 2 app that gives each AI agent its own computer, a micr
   and `beambox takeover` both call `Core::set_takeover`.
 - **Ports** bind to 127.0.0.1 only. A busy host port moves to the next free one, and the UI shows the real one.
 
+## First launch: what a new Mac needs
+
+The host installs nothing: `msb` and `libkrunfw` ship inside the app, and everything else lives in `~/.beambox`
+(`MSB_HOME`) and `~/Library/Application Support/app.beambox.desktop`. It needs an Apple Silicon Mac on macOS 13+
+(`hypervisor.rs`) and a notarized `.dmg` (see Releasing). The Linux side, though, is built on the user's machine:
+at startup `run()` builds the base snapshot (`Core::base_snapshot`, `agent::base_setup`) in the background, and a
+create waits for it. That build takes minutes, a few GB, and four outside services:
+
+| Step | From |
+| --- | --- |
+| `debian:trixie-slim` | Docker Hub |
+| `install.sh packages`: Xvnc, openbox, Plank, Chromium, noVNC… and git, tmux, curl | Debian mirrors |
+| Node 24 (`setup_24.x \| bash`) | NodeSource |
+| Claude Code, Codex, OpenCode (`npm install -g`, plus their platform binaries) | npm |
+
+Known gaps, for when "download and run" has to hold for everyone:
+
+- **Fragile.** Any of those services being down or slow fails the first box, and a failed build only reaches
+  `stderr` (`beambox: couldn't build the base snapshot`), not the window.
+- **Unpinned.** No package, Node or harness version is fixed, so users who install on different days get different
+  systems, and a bad upstream release breaks new installs while existing snapshots keep working.
+- **The fix** is to build the whole base in CI, test it there, publish it as one versioned image and pull that
+  instead (with today's local build as a fallback). The `desktop-image` spec did this for the desktop alone
+  (`DESKTOP_IMAGE`), and `main` dropped it when everything moved into the one base snapshot.
+
+Reset to a new user's state: quit Beambox (and `pkill -f Beambox.app/Contents/MacOS/msb`), delete `~/.beambox`
+and `~/Library/{Application Support,Caches,WebKit}/app.beambox.desktop`, run `defaults delete app.beambox.desktop`
+and delete keychain items with service `app.beambox.desktop`.
+
 ## Scripts
 
 ```bash
@@ -129,7 +158,9 @@ only, because the microsandbox runtime ships for arm64 only on macOS. It signs t
 and staples it, then checks it with `spctl`, and prints the `.dmg`'s path. Tauri signs the app and the `msb` sidecar
 with `Entitlements.plist`, and the script checks that `msb` kept the hypervisor entitlement it needs to run microVMs.
 Tauri copies resources as they are, though, so the script signs `libkrunfw` itself first: notarization rejects a
-bundle with any unsigned binary in it.
+bundle with any unsigned binary in it. Tauri also notarizes only the `.app` and merely signs the `.dmg`, which
+Gatekeeper rejects once downloaded ("Unnotarized Developer ID"), so the script then notarizes and staples the `.dmg`
+too and checks it with `spctl --type open`.
 
 **Locally:** install a **Developer ID Application** certificate in your login keychain (developer.apple.com →
 Certificates), copy `.env.example` to `.env` and fill it in. `.env` is gitignored.

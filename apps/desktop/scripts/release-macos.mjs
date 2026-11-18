@@ -19,6 +19,18 @@ const tauriDir = join(desktopDir, "src-tauri");
 const run = (command, args) => execFileSync(command, args, { stdio: "inherit", env, cwd: desktopDir });
 const read = (command, args) => execFileSync(command, args, { encoding: "utf8", env, cwd: desktopDir });
 
+// Check the notary login first: a wrong Apple ID or app-specific password otherwise fails only after the full build.
+const { APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID } = process.env;
+const notary = ["--apple-id", APPLE_ID, "--password", APPLE_PASSWORD, "--team-id", APPLE_TEAM_ID];
+try {
+  read("xcrun", ["notarytool", "history", ...notary]);
+} catch {
+  console.error(
+    "Apple's notary service refused APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID (use an app-specific password).",
+  );
+  process.exit(1);
+}
+
 run("node", ["scripts/fetch-runtime.mjs"]);
 const runtime = join(tauriDir, "binaries", "runtime");
 for (const lib of readdirSync(runtime).filter((f) => f.endsWith(".dylib"))) {
@@ -45,6 +57,18 @@ if (!entitlements.includes("com.apple.security.hypervisor")) {
 }
 run("xcrun", ["stapler", "validate", app]);
 run("spctl", ["--assess", "--type", "execute", "--verbose", app]);
-const dmg = readdirSync(join(bundle, "dmg")).find((f) => f.endsWith(".dmg"));
-if (!dmg) throw new Error(`no .dmg in ${join(bundle, "dmg")}`);
-console.log(`Signed and notarized: ${join(bundle, "dmg", dmg)}`);
+const name = readdirSync(join(bundle, "dmg")).find((f) => f.endsWith(".dmg"));
+if (!name) throw new Error(`no .dmg in ${join(bundle, "dmg")}`);
+const dmg = join(bundle, "dmg", name);
+// Tauri notarizes the .app but only signs the .dmg, and Gatekeeper rejects a downloaded, unnotarized disk image.
+const submission = JSON.parse(
+  read("xcrun", ["notarytool", "submit", dmg, ...notary, "--wait", "--output-format", "json"]),
+);
+if (submission.status !== "Accepted") {
+  throw new Error(
+    `notarizing ${name}: ${submission.status} (xcrun notarytool log ${submission.id} for details)`,
+  );
+}
+run("xcrun", ["stapler", "staple", dmg]);
+run("spctl", ["--assess", "--type", "open", "--context", "context:primary-signature", "--verbose", dmg]);
+console.log(`Signed and notarized: ${dmg}`);
