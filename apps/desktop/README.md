@@ -72,7 +72,7 @@ Beambox desktop: a Tauri 2 app that gives each AI agent its own computer, a micr
 - **Templates**: image refs live in `TEMPLATES` in `core.rs`. Agent sandboxes keep `base` or `desktop` as their
   template and add the harness.
 - **Agent start** (`Core::create`, `Core::start`, `Core::fork`): write `/etc/beambox/sandbox.json` (what the MCP
-  server's `sandbox_info` returns), then `tmux new-session -d -s agent -c /workspace '<harness> <task>; exec bash -l'`
+  server's `sandbox_info` returns), then `tmux -u new-session -d -s agent -c /workspace -e LANG=C.UTF-8 '<harness> <task>; exec bash -l'`
   through `exec_env`, the one backend call that takes environment variables. The tmux server inherits the
   credential from that exec and passes it to the harness; then it is removed from tmux's global environment and
   unset before the fallback shell, so new tmux windows don't get it. A restart or fork starts the harness again without the

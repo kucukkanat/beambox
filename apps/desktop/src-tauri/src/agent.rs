@@ -97,7 +97,7 @@ impl Harness {
         let unset = format!("unset {}", CREDENTIAL_VARS.join(" "));
         let forget: Vec<_> = CREDENTIAL_VARS.iter().map(|v| format!(" && tmux set-environment -g -u {v}")).collect();
         format!(
-            "tmux new-session -d -s {SESSION} -c /workspace -e BROWSER={OPEN_PATH} {}{}",
+            "tmux -u new-session -d -s {SESSION} -c /workspace -e LANG=C.UTF-8 -e BROWSER={OPEN_PATH} {}{}",
             sh_quote(&format!("{harness}; {unset}; exec bash -l")),
             forget.concat()
         )
@@ -214,7 +214,8 @@ pub fn sandbox_setup(harness: Option<&Harness>, desktop: bool) -> Option<String>
 /// shell if the session is gone), a login shell otherwise.
 pub fn terminal_command(harness: Option<&str>) -> Vec<String> {
     let args: &[&str] = match harness {
-        Some(_) => &["/bin/sh", "-c", "tmux attach -t agent 2>/dev/null || exec /bin/sh -l"],
+        // `-u`: the exec session has no UTF-8 locale, and without it tmux draws every non-ASCII character as `_`.
+        Some(_) => &["/bin/sh", "-c", "tmux -u attach -t agent 2>/dev/null || exec /bin/sh -l"],
         // bash when the image has it (desktops do), for its prompt and line editing; Alpine has only sh. The window
         // sends its size just after opening, and bash loses its first prompt to that resize, so it starts a moment
         // later, at the right size (exec sessions can't be given a size up front).
@@ -259,7 +260,7 @@ mod tests {
         let unset = "unset ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN OPENAI_API_KEY; exec bash -l";
         let forget = " && tmux set-environment -g -u ANTHROPIC_API_KEY && tmux set-environment -g -u CLAUDE_CODE_OAUTH_TOKEN \
                       && tmux set-environment -g -u OPENAI_API_KEY";
-        let session = "tmux new-session -d -s agent -c /workspace -e BROWSER=/usr/local/bin/beambox-open";
+        let session = "tmux -u new-session -d -s agent -c /workspace -e LANG=C.UTF-8 -e BROWSER=/usr/local/bin/beambox-open";
         assert_eq!(
             start("claude-code", Some("fix the tests")),
             format!(r#"{session} 'claude -- '\''fix the tests'\''; {unset}'{forget}"#)
@@ -415,7 +416,7 @@ mod tests {
     #[test]
     fn the_terminal_joins_the_agent_session_only_in_agent_sandboxes() {
         assert!(terminal_command(None)[2].ends_with("command -v bash >/dev/null && exec bash -l || exec /bin/sh -l"));
-        assert!(terminal_command(Some("codex"))[2].starts_with("tmux attach -t agent"));
+        assert!(terminal_command(Some("codex"))[2].starts_with("tmux -u attach -t agent"));
     }
 
     #[test]

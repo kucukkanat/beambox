@@ -721,7 +721,7 @@ mod tests {
         let execs = fake.execs.lock().unwrap().clone();
         let (sandbox, start) = execs.last().unwrap();
         assert_eq!(sandbox, "sandbox-1");
-        assert!(start.starts_with("tmux new-session -d -s agent -c /workspace "), "{start}");
+        assert!(start.starts_with("tmux -u new-session -d -s agent -c /workspace "), "{start}");
         assert!(start.contains("claude -- '\\''fix the tests'\\''"), "{start}");
         let info_json = fake.files.lock().unwrap()[&("sandbox-1".to_string(), agent::INFO_PATH.to_string())].clone();
         let details: serde_json::Value = serde_json::from_slice(&info_json).unwrap();
@@ -763,7 +763,7 @@ mod tests {
         // Started in tmux like any agent, with nothing in its environment: it shows its own login.
         let envs = fake.envs.lock().unwrap().clone();
         assert_eq!(envs, [(info.name.clone(), vec![])]);
-        assert!(fake.execs.lock().unwrap().iter().any(|(n, c)| *n == info.name && c.contains("tmux new-session -d -s agent")));
+        assert!(fake.execs.lock().unwrap().iter().any(|(n, c)| *n == info.name && c.contains("tmux -u new-session -d -s agent")));
         // The app still offers the key it could use.
         assert_eq!(core.missing_credentials("claude-code").unwrap(), ["anthropic"]);
         assert_eq!(core.missing_credentials("opencode").unwrap(), ["anthropic", "openai"]);
@@ -895,7 +895,7 @@ mod tests {
         let execs = fake.execs.lock().unwrap();
         assert!(execs[0].1.starts_with("tmux kill-session -t agent"), "{execs:?}");
         let start = &execs.last().unwrap().1;
-        assert!(start.starts_with("tmux new-session -d -s agent") && !start.contains("fix it"), "{start}");
+        assert!(start.starts_with("tmux -u new-session -d -s agent") && !start.contains("fix it"), "{start}");
         // A plain sandbox has no agent to restart.
         drop(execs);
         core.create(CreateOpts { name: Some("plain".into()), ..Default::default() }).await.unwrap();
