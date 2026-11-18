@@ -380,7 +380,7 @@ describe("new box sheet", () => {
     expect(api.create).toHaveBeenCalledExactlyOnceWith({
       desktop: true,
       cpus: 2,
-      memoryMib: 4096,
+      memoryMib: 3072,
       network: "public",
     });
   });
@@ -529,6 +529,47 @@ describe("throw away", () => {
     expect(api.delete).not.toHaveBeenCalled();
     await act(() => vi.advanceTimersByTimeAsync(200));
     expect(api.delete).toHaveBeenCalledExactlyOnceWith("b");
+  });
+});
+
+describe("auto-sleep", () => {
+  beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }));
+  const minutes = async (n: number) => {
+    for (let i = 0; i < n; i++) await act(() => vi.advanceTimersByTimeAsync(60_000));
+  };
+  const slept = (api: Api) => (api.stop as ReturnType<typeof vi.fn>).mock.calls.map(([name]) => name);
+  // A stopped box shows as stopped in the next list, as with the real backend.
+  const boxes = (...list: Sandbox[]) => {
+    const api = fakeApi(list, { done: "exited" });
+    api.stop = vi.fn(async (name: string) => {
+      for (const s of list) if (s.name === name) s.status = "stopped";
+    });
+    return api;
+  };
+
+  it("puts a box to sleep after 30 quiet minutes, but not a busy one", async () => {
+    const api = boxes(sandbox({ name: "quiet" }), sandbox({ name: "busy" }));
+    api.metrics = vi.fn(async (name: string) => ({ cpuPercent: name === "busy" ? 40 : 0.5, memoryBytes: 0 }));
+    render(<App api={api} />);
+    await card("quiet");
+    // Checked once a minute: quiet from the first check, asleep at the check 30 minutes later.
+    await minutes(30);
+    expect(slept(api)).toEqual([]);
+    await minutes(1);
+    expect(slept(api)).toEqual(["quiet"]);
+    expect(await screen.findByText("quiet went to sleep: it was quiet for 30 minutes")).toBeInTheDocument();
+  });
+
+  it("sleeps a box 10 minutes after its agent stopped, and never the box you have open", async () => {
+    const api = boxes(sandbox({ name: "done", harness: "claude-code" }), sandbox({ name: "seen" }));
+    render(<App api={api} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Open seen" }));
+    await minutes(10);
+    expect(slept(api)).toEqual([]);
+    await minutes(2);
+    expect(slept(api)).toEqual(["done"]);
+    await minutes(40);
+    expect(slept(api)).toEqual(["done"]);
   });
 });
 

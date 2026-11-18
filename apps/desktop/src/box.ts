@@ -62,7 +62,7 @@ export const helperOf = (s: Sandbox): Helper => (s.harness as Harness | null) ??
 export const SIZES = [
   { label: "Light", cpus: 1, gb: 1 },
   { label: "Standard", cpus: 2, gb: 2 },
-  { label: "Roomy", cpus: 2, gb: 4 },
+  { label: "Roomy", cpus: 2, gb: 3 },
   { label: "Heavy", cpus: 4, gb: 8 },
 ] as const;
 /** The smallest size with a screen: Chromium crawls on less. */

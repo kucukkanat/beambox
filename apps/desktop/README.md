@@ -21,7 +21,7 @@ Beambox desktop: a Tauri 2 app that gives each AI agent its own computer, a micr
     press-and-hold key (`HoldKey` in `src/keys.tsx`, 1.2 s) followed by a 5 s undo toast.
   - **New box** (or `N`) opens a sheet: who works in it (Claude Code, Codex CLI, OpenCode or just a computer, with
     "Signed in" or "Sign in once"), the job, a folder to lend (click for `tauri-plugin-dialog`, or drop one:
-    `onFolderDrop`), a screen (a desktop), a size fader (Light 1 CPU/1 GB, Standard 2/2, Roomy 2/4, Heavy 4/8; a
+    `onFolderDrop`), a screen (a desktop), a size fader (Light 1 CPU/1 GB, Standard 2/2, Roomy 2/3, Heavy 4/8; a
     screen needs Roomy) and the network. More options holds the name, web ports and an optional key. While a create
     runs, its card narrates the boot on a timer; only the end of the create is real.
   - Opening a box shows one large screen with Screen (noVNC, desktop boxes), Terminal and Files. Each shared web
@@ -37,6 +37,10 @@ Beambox desktop: a Tauri 2 app that gives each AI agent its own computer, a micr
     free host ports, and start the agent over without its task: snapshots hold the disk, not memory. Throwing a box
     away also deletes its save points (one a copy still boots from stays until a later delete).
   - The card and the box view show the lent folder (`SandboxInfo.mount`).
+  - **Auto-sleep** (`useAutoSleep` in `src/App.tsx`, while the window runs): once a minute, a running box sleeps
+    10 minutes after its agent stopped, or after 30 minutes with its CPU under 2% (`metrics`), and says why in a
+    toast. Never the box you have open, one you drive or one waiting for a sign-in. Sleeping keeps the disk but not
+    what's running: open windows, dev servers and an agent waiting for you.
   - Files opens at `/workspace` (the root if there's none), hides microsandbox's `/.msb` and opens symlinks to
     folders as folders. The desktop's VNC port is the Screen itself, so it gets no button.
 - **Signing in** happens inside the sandbox, with a subscription or a key. Without a stored key, the harness signs
@@ -236,8 +240,9 @@ doesn't wait for GUI-subsystem programs, so output can land after the next promp
   kind, about 4 GiB each) when the app starts and after a build. Sandboxes made from them keep working: their
   disks are their own. The SDK lists a snapshot's member and group separately; Beambox joins them into the
   `<group>:<member>` name.
-- **Defaults:** plain sandboxes 1 vCPU and 1 GiB (enough for the harnesses every sandbox carries); plain desktops 2 vCPUs and 4 GiB, since Chromium crawls on
-  one; agent sandboxes 2 vCPUs and 2 GiB (4 GiB with a desktop). The app runs `start-desktop` after each boot of a
+- **Defaults:** plain sandboxes 1 vCPU and 1 GiB (enough for the harnesses every sandbox carries); plain desktops 2 vCPUs and 3 GiB, since Chromium crawls on
+  one; agent sandboxes 2 vCPUs and 2 GiB (3 GiB with a desktop). The bare desktop leaves room: it
+  runs in about 100 MiB before Chromium. The app runs `start-desktop` after each boot of a
   desktop. A plain sandbox's terminal is bash.
 - **What's in a desktop:** see [`packages/desktop-image`](../../packages/desktop-image). Xvnc, openbox with
   the Beambox theme, a tint2 top bar, the Plank dock, xterm and Chromium.

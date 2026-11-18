@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Templates: (name, default memory MiB, guest ports published by default).
-pub const TEMPLATES: &[(&str, u32, &[u16])] = &[("base", 1024, &[]), ("desktop", 4096, &[VNC_PORT])];
+pub const TEMPLATES: &[(&str, u32, &[u16])] = &[("base", 1024, &[]), ("desktop", 3072, &[VNC_PORT])];
 pub const VNC_PORT: u16 = 5900;
 /// The guest port of the desktop in a browser (`CreateOpts::web`, start-desktop's web desktop).
 pub const WEB_PORT: u16 = 6080;
@@ -40,7 +40,7 @@ pub struct CreateOpts {
     pub desktop: Option<bool>,
     /// vCPUs, default 1 (2 for agents and desktops: Chromium is slow on one).
     pub cpus: Option<u8>,
-    /// Memory in MiB, default 1024 (4096 for desktops, 2048 for agents, 4096 for agents with a desktop).
+    /// Memory in MiB, default 1024 (3072 for desktops, 2048 for agents, 3072 for agents with a desktop).
     pub memory_mib: Option<u32>,
     /// Host folder to mount at /workspace.
     pub mount: Option<String>,
@@ -112,7 +112,7 @@ impl Core {
         let &(_, mut memory, default_ports) =
             TEMPLATES.iter().find(|t| t.0 == template).ok_or_else(|| format!("unknown template {template}"))?;
         if harness.is_some() {
-            memory = if desktop { 4096 } else { 2048 };
+            memory = if desktop { 3072 } else { 2048 };
         }
         let web = opts.web.unwrap_or(false);
         if web && !desktop {
@@ -731,11 +731,11 @@ mod tests {
         let (_, core) = core_with(|_| true);
         let info = core.create(CreateOpts { template: Some("desktop".into()), ..Default::default() }).await.unwrap();
         // A browser needs more than the base 1 GiB.
-        assert_eq!((info.cpus, info.memory_mib), (2, 4096));
+        assert_eq!((info.cpus, info.memory_mib), (2, 3072));
         assert_eq!(info.ports, [Port { guest: VNC_PORT, host: VNC_PORT }]);
         // `desktop: true` without a harness is the same thing.
         let info = core.create(CreateOpts { desktop: Some(true), ..Default::default() }).await.unwrap();
-        assert_eq!((info.template.as_str(), info.memory_mib), ("desktop", 4096));
+        assert_eq!((info.template.as_str(), info.memory_mib), ("desktop", 3072));
     }
 
     #[tokio::test]
@@ -788,7 +788,7 @@ mod tests {
         let specs = created(&fake);
         assert!(specs.iter().all(|s| s.snapshot == Some(base_snapshot_name())), "{specs:?}");
         let c = specs.iter().find(|s| s.name == "c").unwrap();
-        assert_eq!((c.memory_mib, c.ports.len(), c.template.as_str()), (4096, 1, "desktop"));
+        assert_eq!((c.memory_mib, c.ports.len(), c.template.as_str()), (3072, 1, "desktop"));
         assert_eq!(c.setup, agent::sandbox_setup(Some(agent::harness("claude-code").unwrap()), true));
         let names: Vec<_> = core.backend.list().await.unwrap().into_iter().map(|s| s.name).collect();
         assert_eq!(names, ["a", "b", "c", "d"], "the build sandbox is deleted");
@@ -887,7 +887,7 @@ mod tests {
         let (fake, core) = core_with(|_| true);
         let opts = CreateOpts { template: Some("desktop".into()), ..agent("x") };
         let info = core.create(opts).await.unwrap();
-        assert_eq!((info.template.as_str(), info.memory_mib), ("desktop", 4096));
+        assert_eq!((info.template.as_str(), info.memory_mib), ("desktop", 3072));
         let spec = fake.specs.lock().unwrap().last().unwrap().clone();
         assert!(spec.setup.unwrap().contains("install.sh files"));
     }

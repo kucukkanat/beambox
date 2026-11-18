@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Toaster, toast } from "sonner";
 import type { AgentStatus, Api, CreateOpts, Harness, Sandbox, Status } from "./api.ts";
 import { BoxView, type Mode } from "./BoxView.tsx";
-import { boxState, needsYou } from "./box.ts";
+import { type BoxState, boxState, needsYou } from "./box.ts";
 import { HypervisorCard } from "./HypervisorCard.tsx";
 import { cn, showError, typing } from "./lib/utils.ts";
 import { spring, useReducedMotion } from "./motion.ts";
@@ -60,6 +60,68 @@ function useAgents(api: Api, sandboxes: Sandbox[]) {
   );
   const forget = useCallback((name: string) => setAgents(({ [name]: _, ...rest }) => rest), []);
   return [agents, setAgent, forget] as const;
+}
+
+/** A box goes to sleep on its own 10 minutes after its agent stopped, or after 30 minutes with its CPU under 2%. */
+export const AUTO_SLEEP = { agentStoppedMs: 10 * 60_000, quietMs: 30 * 60_000, quietCpuPercent: 2 };
+
+/**
+ * Checked once a minute. Never the box you have open, one you drive, or one waiting for a sign-in. Sleeping keeps the
+ * disk but not what's running, so the box says why it slept.
+ */
+function useAutoSleep(
+  api: Api,
+  boxes: { sandbox: Sandbox; state: BoxState }[],
+  open: string | undefined,
+  sleep: (name: string, why: string) => void,
+) {
+  const latest = useRef({ boxes, open, sleep });
+  latest.current = { boxes, open, sleep };
+  useEffect(() => {
+    // Since when each box has had its agent stopped, or been quiet.
+    const since: Record<string, { stopped?: number | undefined; quiet?: number | undefined }> = {};
+    const check = async () => {
+      const { boxes, open } = latest.current;
+      const now = Date.now();
+      for (const { sandbox, state } of boxes) {
+        const name = sandbox.name;
+        if (
+          sandbox.status !== "running" ||
+          name === open ||
+          ["booting", "sign-in", "driving"].includes(state)
+        ) {
+          delete since[name];
+          continue;
+        }
+        since[name] ??= {};
+        const t = since[name];
+        if (state === "agent-stopped") {
+          t.stopped ??= now;
+          if (now - t.stopped >= AUTO_SLEEP.agentStoppedMs) {
+            delete since[name];
+            latest.current.sleep(name, "its agent stopped 10 minutes ago");
+          }
+          continue;
+        }
+        t.stopped = undefined;
+        const cpu = await api.metrics(name).then(
+          (m) => m.cpuPercent,
+          () => Number.POSITIVE_INFINITY,
+        );
+        if (cpu >= AUTO_SLEEP.quietCpuPercent) {
+          t.quiet = undefined;
+          continue;
+        }
+        t.quiet ??= now;
+        if (now - t.quiet >= AUTO_SLEEP.quietMs) {
+          delete since[name];
+          latest.current.sleep(name, "it was quiet for 30 minutes");
+        }
+      }
+    };
+    const timer = setInterval(() => void check(), 60_000);
+    return () => clearInterval(timer);
+  }, [api]);
 }
 
 /** Type a line into the agent's tmux session, once tmux has attached (its first redraw). */
@@ -275,6 +337,14 @@ export function App({ api }: { api: Api }) {
       showError(error);
     }
   };
+
+  useAutoSleep(api, boxes, opened?.name, (name, why) => {
+    setStatus(name, "stopped");
+    void api.stop(name).then(() => {
+      toast(`${name} went to sleep: ${why}`, { description: "Its files are kept. Wake it to go on." });
+      return refresh();
+    }, showError);
+  });
 
   const box = opened && boxes.find((b) => b.sandbox.name === opened.name);
   return (
