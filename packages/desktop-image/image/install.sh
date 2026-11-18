@@ -1,8 +1,9 @@
 #!/bin/sh
 # Installs the Beambox desktop on debian:trixie-slim from the files beside this script, as root. The Dockerfile,
 # Beambox's local snapshot build and agent desktops all run it: TigerVNC's Xvnc (X server and VNC server in one),
-# openbox with the Beambox theme (macOS-style buttons on the left), a tint2 top bar, the Plank dock, xterm, Inter,
-# dark GTK and Chromium, set up to run as root, with the system title bar and no sign-in or bookmarks bar.
+# openbox with the Beambox theme (macOS-style buttons on the left), a tint2 top bar, the Plank dock, xterm, the
+# PCManFM file manager (libfm-modules adds its right-click actions, such as Set as Wallpaper), Inter, dark GTK and
+# Chromium, set up to run as root, with the system title bar and no sign-in or bookmarks bar.
 #
 # `install.sh packages` only installs the packages and `install.sh files` only puts the files beside it in place, so
 # the Dockerfile can keep the packages in a layer that changing a file here doesn't rebuild. No argument does both.
@@ -31,7 +32,7 @@ FILTERS
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
   apt-get install -y --no-install-recommends tigervnc-standalone-server tigervnc-tools openbox tint2 plank \
-    xcompmgr rofi xterm x11-xserver-utils hsetroot fonts-inter fonts-dejavu-core papirus-icon-theme librsvg2-common \
+    xcompmgr rofi xterm pcmanfm libfm-modules x11-xserver-utils hsetroot fonts-inter fonts-dejavu-core papirus-icon-theme librsvg2-common \
     dbus-x11 dconf-cli dconf-gsettings-backend net-tools procps ca-certificates python3 chromium
   # The web desktop (start-desktop's WEB_PORT): noVNC's page and websockify's Python, unpacked from Debian's packages
   # without installing them. Their dependencies (Node.js for noVNC's tools, numpy, Redis and HTTP clients for
@@ -47,10 +48,14 @@ fi
 
 install -D -m 755 "$src/start-desktop" /usr/local/bin/start-desktop
 install -D -m 755 "$src/beambox-desktop" /usr/local/bin/beambox-desktop
+install -D -m 755 "$src/desktop-watch" /usr/local/bin/desktop-watch
+install -D -m 755 "$src/set-wallpaper" /usr/local/bin/set-wallpaper
+install -D -m 644 "$src/set-wallpaper.desktop" /usr/share/file-manager/actions/set-wallpaper.desktop
 install -D -m 644 "$src/Xresources" /etc/beambox/Xresources
 install -D -m 644 -t /usr/share/themes/Beambox/openbox-3 "$src"/openbox/*
 install -D -m 644 "$src/tint2rc" /etc/xdg/tint2/tint2rc
 install -D -m 644 "$src/applications/xterm.desktop" /usr/share/applications/xterm.desktop
+install -D -m 644 "$src/applications/files.desktop" /usr/share/applications/files.desktop
 install -D -m 644 "$src/chromium-flags" /etc/chromium.d/beambox
 install -D -m 644 "$src/browser-preferences.json" /etc/chromium/master_preferences
 install -D -m 644 "$src/browser-policies.json" /etc/chromium/policies/managed/beambox.json
@@ -64,6 +69,8 @@ sed -i 's|<keyboard>|<keyboard>\n    <keybind key="W-space"><action name="Execut
 sed -i 's|x-terminal-emulator|xterm|g; s|x-www-browser|chromium|g' /etc/xdg/openbox/menu.xml
 # Ours (xterm.desktop, "Terminal") replaces Debian's two, which the app launcher would list as XTerm and UXTerm.
 rm -f /usr/share/applications/debian-xterm.desktop /usr/share/applications/debian-uxterm.desktop
+# Ours (files.desktop, "Files") replaces PCManFM's, and its desktop-icons settings go: openbox draws the background.
+rm -f /usr/share/applications/pcmanfm.desktop /usr/share/applications/pcmanfm-desktop-pref.desktop
 
 # The dock, set through dconf: launchers named after the windows' class, so a running app shares its launcher's icon.
 mkdir -p /etc/dconf/profile /root/.config/plank/dock1/launchers
@@ -73,6 +80,8 @@ printf '[PlankDockItemPreferences]\nLauncher=file:///usr/share/applications/chro
   > /root/.config/plank/dock1/launchers/browser.dockitem
 printf '[PlankDockItemPreferences]\nLauncher=file:///usr/share/applications/xterm.desktop\n' \
   > /root/.config/plank/dock1/launchers/terminal.dockitem
+printf '[PlankDockItemPreferences]\nLauncher=file:///usr/share/applications/files.desktop\n' \
+  > /root/.config/plank/dock1/launchers/files.dockitem
 dconf update
 
 # Dark GTK, so the browser matches.

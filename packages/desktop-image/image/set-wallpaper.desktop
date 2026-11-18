@@ -1,0 +1,12 @@
+# Files (PCManFM) adds "Set as Wallpaper" to the right-click menu of a single image: a FileManager-Actions entry,
+# read from /usr/share/file-manager/actions.
+[Desktop Entry]
+Type=Action
+Name=Set as Wallpaper
+Icon=preferences-desktop-wallpaper
+Profiles=image;
+
+[X-Action-Profile image]
+MimeTypes=image/*;
+SelectionCount==1
+Exec=set-wallpaper %f

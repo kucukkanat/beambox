@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Files
+Comment=Browse the files in this sandbox
+Exec=pcmanfm %U
+Icon=system-file-manager
+Categories=System;Utility;FileManager;
+MimeType=inode/directory;

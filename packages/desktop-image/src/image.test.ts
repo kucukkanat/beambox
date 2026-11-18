@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { it } from "node:test";
 import { grabFrame } from "./vnc-frame.ts";
 
@@ -45,12 +48,102 @@ it("install.sh sets dpkg's filters before it installs, and does both steps when 
   }
 });
 
+it("the dock pins a file manager that install.sh installs and gives a launcher", () => {
+  const install = read("../image/install.sh");
+  assert.match(install, /apt-get install(?:[^\n]|\\\n)*\bpcmanfm\b/);
+  has(install, '"$src/applications/files.desktop" /usr/share/applications/files.desktop');
+  has(install, "Launcher=file:///usr/share/applications/files.desktop");
+  has(read("../image/plank.dconf"), "'files.dockitem'");
+  has(read("../image/applications/files.desktop"), "Exec=pcmanfm");
+});
+
+it("desktop-watch refits the background and the dock when the screen changes size, and shows a wallpaper", () => {
+  // Stand-ins for X's tools on PATH: xrandr reports the size in `screen` and fails once it's gone (X has exited),
+  // `sleep` moves on to the next step, and everything the script draws or starts is logged to `calls`.
+  const dir = mkdtempSync(join(tmpdir(), "desktop-watch-"));
+  const bin = (name: string, body: string) => {
+    writeFileSync(join(dir, name), `#!/bin/sh\n${body}\n`);
+    chmodSync(join(dir, name), 0o755);
+  };
+  const wallpaper = join(dir, "wallpaper.png");
+  // Each step: the screen size, and the wallpaper's contents and mtime ("" = none).
+  const steps = ["1114 695 -", "1114 695 -", "2000 783 -", "2000 783 png 5", "2000 783 png 5"];
+  writeFileSync(join(dir, "steps"), `${steps.join("\n")}\n`);
+  const next = `set -- $(sed -n 1p "${dir}/steps"); sed -i.bak 1d "${dir}/steps"
+if [ -z "$1" ]; then rm -f "${dir}/screen"; else echo "$1 $2" > "${dir}/screen"; fi
+if [ "$3" = png ]; then echo "$3" > "${wallpaper}"; echo "$4" > "${dir}/mtime"; fi`;
+  bin("next", next);
+  bin(
+    "xrandr",
+    `[ -f "${dir}/screen" ] || exit 1; read w h < "${dir}/screen"; echo "Screen 0: minimum 32 x 32, current $w x $h, maximum 16384 x 16384"`,
+  );
+  bin("stat", `[ -s "$3" ] && cat "${dir}/mtime"`);
+  bin("sleep", `"${dir}/next"`);
+  bin("setsid", '"$@"');
+  for (const name of ["hsetroot", "pkill", "plank"]) bin(name, `echo "${name} $*" >> "${dir}/calls"`);
+  try {
+    execFileSync(join(dir, "next"));
+    execFileSync("sh", [new URL("../image/desktop-watch", import.meta.url).pathname], {
+      env: { PATH: `${dir}:/usr/bin:/bin`, WALLPAPER: wallpaper },
+      timeout: 10_000,
+    });
+    const gradient = "hsetroot -add #2b4c7e -add #1a2238 -add #0d1117 -gradient 160";
+    const calls = readFileSync(join(dir, "calls"), "utf8")
+      .trim()
+      .split("\n")
+      .map((c) => c.trim());
+    // Plank starts in the background, so only the order of the rest is fixed.
+    assert.equal(calls.filter((c) => c === "plank").length, 2, "Plank restarts once per size");
+    assert.deepEqual(
+      calls.filter((c) => c !== "plank"),
+      [
+        ...[gradient, "pkill -x plank"], // started at 1114x695
+        ...[gradient, "pkill -x plank"], // resized to 2000x783
+        `hsetroot -cover ${wallpaper}`, // a wallpaper appeared: the dock stays
+      ],
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it("Files' Set as Wallpaper copies one image to where desktop-watch looks", () => {
+  const action = read("../image/set-wallpaper.desktop");
+  for (const line of ["Type=Action", "MimeTypes=image/*;", "SelectionCount==1", "Exec=set-wallpaper %f"]) {
+    has(action, line);
+  }
+  has(read("../image/install.sh"), "/usr/share/file-manager/actions/set-wallpaper.desktop");
+  // PCManFM only adds actions to its menu through libfm's gtk-menu-actions module, which is in libfm-modules: only a
+  // recommended package, so --no-install-recommends leaves it out.
+  assert.match(read("../image/install.sh"), /apt-get install(?:[^\n]|\\\n)*\blibfm-modules\b/);
+  // Both scripts use the same path.
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansion
+  const path = "WALLPAPER=${WALLPAPER:-/root/.config/beambox/wallpaper}";
+  for (const file of ["desktop-watch", "set-wallpaper"]) has(read(`../image/${file}`), path);
+  const script = new URL("../image/set-wallpaper", import.meta.url).pathname;
+  const dir = mkdtempSync(join(tmpdir(), "set-wallpaper-"));
+  try {
+    const wallpaper = join(dir, "config", "beambox", "wallpaper");
+    writeFileSync(join(dir, "a photo.png"), "png");
+    execFileSync("sh", [script, join(dir, "a photo.png")], {
+      env: { PATH: "/usr/bin:/bin", WALLPAPER: wallpaper },
+    });
+    assert.equal(readFileSync(wallpaper, "utf8"), "png");
+    assert.throws(() => execFileSync("sh", [script, join(dir, "missing.png")], { stdio: "pipe" }), /usage/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 it("start-desktop serves the web desktop only when asked, behind a token, and before its early exit", () => {
   const start = read("../image/start-desktop");
   // biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansion, not a template
   has(start, "web_port=${WEB_PORT:-$(cat /etc/beambox/web-port 2>/dev/null)}");
   has(start, 'if [ -n "$web_port" ]');
-  assert.match(start, /websockify [^\n]*--token-plugin ReadOnlyTokenFile \\\n\s+--token-source \/etc\/beambox\/web-targets/);
+  assert.match(
+    start,
+    /websockify [^\n]*--token-plugin ReadOnlyTokenFile \\\n\s+--token-source \/etc\/beambox\/web-targets/,
+  );
   has(start, 'echo "$token: localhost:5900"');
   // A restarted sandbox has Xvnc already running only if it never stopped; the web part must not depend on it.
   assert.ok(start.indexOf("websockify") < start.indexOf("pgrep Xvnc >/dev/null && exit 0"));

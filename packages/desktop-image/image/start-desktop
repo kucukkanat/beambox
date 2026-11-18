@@ -31,13 +31,14 @@ until xsetroot -solid '#1a2238' -cursor_name left_ptr 2>/dev/null || [ "$i" -ge 
   i=$((i + 1))
   sleep 0.1
 done
-hsetroot -add '#2b4c7e' -add '#1a2238' -add '#0d1117' -gradient 160 >/dev/null 2>&1
 setsid openbox >/tmp/openbox.log 2>&1 &
 # Window shadows, and see-through dock and top bar. (picom loses track of windows under Xvnc.)
 setsid xcompmgr -c -C -r 12 -o 0.45 -l -14 -t -12 >/dev/null 2>&1 &
 setsid tint2 -c /etc/xdg/tint2/tint2rc >/tmp/tint2.log 2>&1 &
-# Plank keeps its settings in dconf, which needs a session bus.
-setsid dbus-launch --exit-with-session plank >/tmp/plank.log 2>&1 &
+# One session bus for the desktop: Plank keeps its settings in dconf, which needs one.
+eval "$(dbus-launch --sh-syntax)"
+# The background and the Plank dock, refitted whenever the screen changes size (desktop-watch).
+setsid desktop-watch >/tmp/desktop-watch.log 2>&1 &
 # Copy and paste between the desktop and the app.
 setsid vncconfig -nowin >/dev/null 2>&1 &
 setsid xterm -geometry 100x28+40+60 >/dev/null 2>&1 &

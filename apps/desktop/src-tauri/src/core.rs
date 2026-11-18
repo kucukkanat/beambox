@@ -16,7 +16,7 @@ pub const TEMPLATES: &[(&str, &str, u32, &[u16])] = &[
 /// The Desktop template's image: `packages/desktop-image/image/` on Debian, built and published by
 /// `.github/workflows/desktop-image.yml`. Its tag follows the desktop snapshot's member (`snapshot_key`): bump
 /// both when `packages/desktop-image/image/` changes.
-pub const DESKTOP_IMAGE: &str = "ghcr.io/OWNER/beambox-desktop:6";
+pub const DESKTOP_IMAGE: &str = "ghcr.io/OWNER/beambox-desktop:7";
 pub const VNC_PORT: u16 = 5900;
 /// The guest port of the desktop in a browser (`CreateOpts::web`, start-desktop's web desktop).
 pub const WEB_PORT: u16 = 6080;
@@ -30,9 +30,9 @@ pub const BUILD_PREFIX: &str = "beambox-build-";
 pub fn snapshot_key(harness: Option<&str>, desktop: bool) -> Option<(String, String)> {
     match (harness, desktop) {
         (None, false) => None,
-        (None, true) => Some(("beambox-build-desktop".into(), "beambox-desktop-6".into())),
+        (None, true) => Some(("beambox-build-desktop".into(), "beambox-desktop-7".into())),
         (Some(h), false) => Some((format!("{BUILD_PREFIX}{h}"), format!("beambox-{h}-5"))),
-        (Some(h), true) => Some((format!("{BUILD_PREFIX}{h}-desktop"), format!("beambox-{h}-desktop-8"))),
+        (Some(h), true) => Some((format!("{BUILD_PREFIX}{h}-desktop"), format!("beambox-{h}-desktop-9"))),
     }
 }
 
@@ -740,7 +740,7 @@ mod tests {
         let info = core.create(opts).await.unwrap();
         assert_eq!((info.template.as_str(), info.memory_mib), ("desktop", 4096));
         let spec = fake.specs.lock().unwrap().last().unwrap().clone();
-        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-8"));
+        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-9"));
     }
 
     #[tokio::test]
@@ -763,7 +763,7 @@ mod tests {
         let specs = fake.specs.lock().unwrap().clone();
         let snapshot = |name: &str| specs.iter().find(|s| s.name == name).unwrap().snapshot.clone().unwrap();
         assert_eq!(snapshot("a"), snapshot("b"));
-        assert_eq!(snapshot("c"), "beambox-build-codex-desktop:beambox-codex-desktop-8");
+        assert_eq!(snapshot("c"), "beambox-build-codex-desktop:beambox-codex-desktop-9");
         let c = specs.iter().find(|s| s.name == "c").unwrap();
         assert_eq!((c.memory_mib, c.ports.len(), c.template.as_str()), (4096, 1, "desktop"));
         let names: Vec<_> = core.backend.list().await.unwrap().into_iter().map(|s| s.name).collect();
@@ -794,7 +794,7 @@ mod tests {
         assert!(notice.contains(DESKTOP_IMAGE) && notice.contains("registry unreachable"), "{notice}");
         assert_eq!((info.name.as_str(), info.ports.as_slice()), ("sandbox-1", &[Port { guest: VNC_PORT, host: VNC_PORT }][..]));
         let spec = fake.specs.lock().unwrap().last().unwrap().clone();
-        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-desktop:beambox-desktop-6"));
+        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-desktop:beambox-desktop-7"));
         assert_eq!((spec.template.as_str(), spec.memory_mib), ("desktop", 2048));
         // The next one boots from that snapshot straight away: the same desktop, without asking the registry again.
         let second = core.create(plain_desktop()).await.unwrap();
@@ -867,7 +867,7 @@ mod tests {
         assert_eq!(image, agent::IMAGE);
         assert!(script.contains("sh /tmp/beambox-desktop/install.sh"));
         let spec = fake.specs.lock().unwrap().last().unwrap().clone();
-        assert_eq!((spec.name, spec.snapshot.as_deref()), (info.name, Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-8")));
+        assert_eq!((spec.name, spec.snapshot.as_deref()), (info.name, Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-9")));
     }
 
     #[test]
@@ -881,7 +881,7 @@ mod tests {
     #[test]
     fn snapshot_names_are_group_and_member() {
         assert_eq!(snapshot_name(None, false), None);
-        assert_eq!(snapshot_name(Some("opencode"), true).unwrap(), "beambox-build-opencode-desktop:beambox-opencode-desktop-8");
+        assert_eq!(snapshot_name(Some("opencode"), true).unwrap(), "beambox-build-opencode-desktop:beambox-opencode-desktop-9");
         for (h, d) in [(None, true), (Some("codex"), false)] {
             assert!(snapshot_key(h, d).unwrap().0.starts_with(BUILD_PREFIX));
         }

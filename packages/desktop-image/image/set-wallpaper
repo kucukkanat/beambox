@@ -1,0 +1,12 @@
+#!/bin/sh
+# set-wallpaper <image>: makes an image the desktop background. Files' "Set as Wallpaper" (set-wallpaper.desktop)
+# runs it, and it works from a terminal too. It copies the image to where desktop-watch looks, so the change shows
+# within a second and lasts across restarts.
+set -e
+WALLPAPER=${WALLPAPER:-/root/.config/beambox/wallpaper}
+if [ ! -f "$1" ]; then
+  echo "usage: set-wallpaper <image>" >&2
+  exit 2
+fi
+mkdir -p "$(dirname "$WALLPAPER")"
+cp "$1" "$WALLPAPER"

@@ -139,6 +139,9 @@ const DESKTOP_FILES: &[(&str, &str)] = &[
     ("install.sh", include_str!("../../../../packages/desktop-image/image/install.sh")),
     ("beambox-desktop", include_str!("../../../../packages/desktop-image/image/beambox-desktop")),
     ("start-desktop", include_str!("../../../../packages/desktop-image/image/start-desktop")),
+    ("desktop-watch", include_str!("../../../../packages/desktop-image/image/desktop-watch")),
+    ("set-wallpaper", include_str!("../../../../packages/desktop-image/image/set-wallpaper")),
+    ("set-wallpaper.desktop", include_str!("../../../../packages/desktop-image/image/set-wallpaper.desktop")),
     ("Xresources", include_str!("../../../../packages/desktop-image/image/Xresources")),
     ("openbox/themerc", include_str!("../../../../packages/desktop-image/image/openbox/themerc")),
     ("openbox/close.xbm", include_str!("../../../../packages/desktop-image/image/openbox/close.xbm")),
@@ -148,6 +151,7 @@ const DESKTOP_FILES: &[(&str, &str)] = &[
     ("tint2rc", include_str!("../../../../packages/desktop-image/image/tint2rc")),
     ("plank.dconf", include_str!("../../../../packages/desktop-image/image/plank.dconf")),
     ("applications/xterm.desktop", include_str!("../../../../packages/desktop-image/image/applications/xterm.desktop")),
+    ("applications/files.desktop", include_str!("../../../../packages/desktop-image/image/applications/files.desktop")),
     ("chromium-flags", include_str!("../../../../packages/desktop-image/image/chromium-flags")),
     ("browser-preferences.json", include_str!("../../../../packages/desktop-image/image/browser-preferences.json")),
     ("browser-policies.json", include_str!("../../../../packages/desktop-image/image/browser-policies.json")),
@@ -369,13 +373,13 @@ mod tests {
     #[test]
     fn the_desktop_looks_like_macos_and_its_browser_runs_as_root() {
         let install = include_str!("../../../../packages/desktop-image/image/install.sh");
-        // Traffic-light buttons on the left, a top bar, a dock with the browser and terminal, an app launcher.
+        // Traffic-light buttons on the left, a top bar, a dock with the browser, files and terminal, an app launcher.
         assert!(install.contains("<titleLayout>CIML</titleLayout>"));
         for part in ["plank", "tint2", "rofi", "fonts-inter", "papirus-icon-theme", "librsvg2-common", "dconf-gsettings-backend"] {
             assert!(install.contains(part), "{part}");
         }
         let plank = include_str!("../../../../packages/desktop-image/image/plank.dconf");
-        assert!(plank.contains("dock-items=['browser.dockitem', 'terminal.dockitem']"));
+        assert!(plank.contains("dock-items=['browser.dockitem', 'files.dockitem', 'terminal.dockitem']"));
         assert!(plank.contains("hide-mode='none'"));
         assert!(install.contains("Launcher=file:///usr/share/applications/chromium.desktop"));
         // Everything runs as root, where Chromium refuses to start with its own sandbox on.
@@ -383,7 +387,7 @@ mod tests {
         assert!(include_str!("../../../../packages/desktop-image/image/browser-preferences.json").contains("\"custom_chrome_frame\": false"));
         assert!(include_str!("../../../../packages/desktop-image/image/browser-policies.json").contains("\"BrowserSignin\": 0"));
         let start = include_str!("../../../../packages/desktop-image/image/start-desktop");
-        for part in ["Xvnc :0 -geometry 1280x800", "xcompmgr", "tint2 -c /etc/xdg/tint2/tint2rc", "dbus-launch --exit-with-session plank"] {
+        for part in ["Xvnc :0 -geometry 1280x800", "xcompmgr", "tint2 -c /etc/xdg/tint2/tint2rc", "eval \"$(dbus-launch --sh-syntax)\"", "setsid desktop-watch"] {
             assert!(start.contains(part), "{part}");
         }
         // The image's CMD starts the same desktop, then stays in the foreground while Xvnc runs.

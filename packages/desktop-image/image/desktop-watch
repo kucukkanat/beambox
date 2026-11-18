@@ -1,0 +1,28 @@
+#!/bin/sh
+# start-desktop runs this in the background for as long as X runs. It keeps the background and the dock fitted to the
+# screen, which changes size whenever the viewer resizes it (noVNC's resize=remote, a resized VNC window). Neither
+# follows on its own: X tiles the old background across the new space, and Plank stays centred on the old width.
+# The background is the image at $WALLPAPER if there is one, cropped to fill the screen, and the gradient otherwise.
+# Copying a new image there takes effect within a second.
+WALLPAPER=${WALLPAPER:-/root/.config/beambox/wallpaper}
+background() {
+  if [ -s "$WALLPAPER" ]; then
+    # -cover crops to fill; older hsetroot builds only have -fill, which stretches.
+    hsetroot -cover "$WALLPAPER" >/dev/null 2>&1 || hsetroot -fill "$WALLPAPER" >/dev/null 2>&1 && return
+  fi
+  hsetroot -add '#2b4c7e' -add '#1a2238' -add '#0d1117' -gradient 160 >/dev/null 2>&1
+}
+size= wallpaper=
+while screen=$(xrandr --current 2>/dev/null | sed -n 's/.* current \([0-9]*\) x \([0-9]*\),.*/\1x\2/p') &&
+  [ -n "$screen" ]; do
+  changed=$(stat -c %Y "$WALLPAPER" 2>/dev/null)
+  [ "$screen $changed" != "$size $wallpaper" ] && background
+  if [ "$screen" != "$size" ]; then
+    # Plank only works out its position when it starts. Its settings are in dconf, which needs the session bus
+    # start-desktop started. Its output goes to this script's log.
+    pkill -x plank
+    setsid plank &
+  fi
+  size=$screen wallpaper=$changed
+  sleep 1
+done

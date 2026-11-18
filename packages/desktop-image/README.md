@@ -1,7 +1,7 @@
 # @repo/desktop-image
 
 The Beambox desktop as a container image: a macOS-like Linux desktop over VNC (openbox, a top bar, a dock and
-Chromium) on `debian:trixie-slim`, for `linux/amd64` and `linux/arm64`. It is published as
+Chromium, plus a file manager) on `debian:trixie-slim`, for `linux/amd64` and `linux/arm64`. It is published as
 `ghcr.io/OWNER/beambox-desktop` (`OWNER` stays a placeholder until the GitHub repository exists).
 
 Beambox ([`apps/desktop`](../../apps/desktop)) builds on it. Desktop sandboxes boot from the image, and agent
@@ -11,7 +11,7 @@ Debian itself, so there's one definition of the desktop either way.
 ## Run it
 
 ```bash
-docker run --rm -p 127.0.0.1:5900:5900 ghcr.io/OWNER/beambox-desktop:6
+docker run --rm -p 127.0.0.1:5900:5900 ghcr.io/OWNER/beambox-desktop:7
 ```
 
 Podman takes the same arguments. Then open `vnc://127.0.0.1:5900` in a VNC viewer (macOS Screen Sharing, TigerVNC,
@@ -23,7 +23,7 @@ Remmina).
 ### In a browser (opt-in)
 
 ```bash
-docker run --rm -e WEB_PORT=6080 -p 127.0.0.1:6080:6080 ghcr.io/OWNER/beambox-desktop:6
+docker run --rm -e WEB_PORT=6080 -p 127.0.0.1:6080:6080 ghcr.io/OWNER/beambox-desktop:7
 ```
 
 The log prints a link such as `http://127.0.0.1:6080/vnc.html?autoconnect=1&resize=remote&path=websockify%3Ftoken%3D…`.
@@ -63,13 +63,28 @@ One consequence: a release that changes only files keeps the Debian packages it 
   buttons on the left (`CIML`), drawn as coloured circle bitmaps.
 - **A `tint2` top bar** (`tint2rc`): "● Beambox" opens `rofi` (also Super+Space), plus the active window's name. No
   clock, because the sandbox runs on UTC.
-- **The Plank dock** (`plank.dconf`): the browser and Terminal, pinned only, magnified on hover.
+- **The Plank dock** (`plank.dconf`): the browser, Files and Terminal, pinned only, magnified on hover.
   - It's set through dconf, so it needs `dbus-launch`, `dconf-gsettings-backend` and `hide-mode='none'` as a
     string enum.
   - Papirus icons need `librsvg2-common`.
 - **`xcompmgr -c -C`** for shadows and the see-through bar and dock. picom loses track of windows under Xvnc.
 - **Look and feel:** a gradient background (`hsetroot`), dark GTK, and xterm in DejaVu Sans Mono (`Xresources`).
+- **`desktop-watch`:** runs in the background and keeps the background and the dock fitted to the screen. The screen
+  changes size whenever the viewer resizes it (noVNC's `resize=remote`, a resized VNC window), and neither follows on
+  its own: X tiles the old background across the new space, and Plank stays centred on the old width. Every second
+  it checks the size with `xrandr`, then redraws the background and restarts Plank when the size has changed.
+  - **Wallpaper:** right-click an image in Files and choose **Set as Wallpaper**, or run `set-wallpaper <image>`.
+    Either copies it to `/root/.config/beambox/wallpaper`, and within a second it replaces the gradient, cropped to
+    fill the screen (`hsetroot -cover`). It stays across restarts and resizes. Delete that file to get the gradient
+    back. The menu item is a FileManager-Actions entry (`set-wallpaper.desktop`, installed in
+    `/usr/share/file-manager/actions`) that PCManFM shows for a single selected image. PCManFM only shows such
+    entries through libfm's `gtk-menu-actions` module, which is in `libfm-modules`, a recommended package that
+    `--no-install-recommends` would skip, so `install.sh` names it.
+  - `start-desktop` starts one D-Bus session for the desktop (`dbus-launch --sh-syntax`), so a restarted Plank still
+    reaches its settings in dconf.
   Debian's `debian-xterm.desktop` and `debian-uxterm.desktop` are removed for our `applications/xterm.desktop`.
+- **Files: PCManFM** (`applications/files.desktop`), a small GTK file manager that opens on `/root`. Its own
+  `pcmanfm.desktop` and the desktop-icons preferences are removed: it never draws the desktop, openbox does.
 - **The browser: Debian's Chromium** on both architectures. Google Chrome's terms don't allow redistributing it in
   an image.
   - `--no-sandbox` (`chromium-flags`), because Chromium won't start as root with its own sandbox.
