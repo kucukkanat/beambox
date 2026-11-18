@@ -7,7 +7,8 @@ import { Button } from "./components/ui/button.tsx";
 import { Desktop } from "./Desktop.tsx";
 import { Icon, Led } from "./keys.tsx";
 import { cn, showError, typing } from "./lib/utils.ts";
-import { Screen, Tools } from "./Shelf.tsx";
+import { SavePoints } from "./SavePoints.tsx";
+import { Folder, Screen, Tools } from "./Shelf.tsx";
 import { Terminal } from "./Terminal.tsx";
 
 export type Mode = "screen" | "terminal" | "files" | "previews";
@@ -18,6 +19,10 @@ type Props = {
   state: BoxState;
   initialMode: Mode | undefined;
   actions: Actions;
+  /** Bumped after each save point: the strip reloads. */
+  saves: number;
+  /** A rewind is running: the screen plays it. */
+  rewinding: boolean;
   /** Flip the AGENT / YOU lever; handing back may carry a note for the agent. */
   onTakeover(on: boolean, note?: string): void;
   /** The Terminal is showing: a pending sign-in is now in front of you. */
@@ -34,6 +39,8 @@ export function BoxView({
   state,
   initialMode,
   actions,
+  saves,
+  rewinding,
   onTakeover,
   onTerminal,
   onBack,
@@ -83,6 +90,7 @@ export function BoxView({
             <span className="mono">{WORD[state]}</span> · {helper.name} · {s.cpus} CPU ·{" "}
             {Math.round(s.memoryMib / 1024)} GB
           </p>
+          {s.mount && <Folder path={s.mount} />}
         </div>
         {s.harness && state !== "agent-stopped" && (
           <Lever
@@ -92,7 +100,7 @@ export function BoxView({
           />
         )}
       </header>
-      <section className="panel flex min-h-[60vh] flex-col gap-3.5">
+      <section className={cn("panel flex min-h-[60vh] flex-col gap-3.5", rewinding && "rewinding")}>
         <fieldset className="dial" aria-label="What the screen shows">
           {modes.map(([id, label, icon]) => (
             <Button key={id} aria-pressed={mode === id} onClick={() => setMode(id)}>
@@ -132,7 +140,13 @@ export function BoxView({
           </div>
         </div>
       </section>
-      {/* More panels (save points) go here, below the screen. */}
+      <SavePoints
+        api={api}
+        name={s.name}
+        version={saves}
+        onCopy={(snapshot, n) => actions.copyFrom(s, snapshot, n)}
+        onRewind={(snapshot, n) => actions.rewind(s.name, snapshot, n)}
+      />
       {handBack && (
         <HandBack
           helper={helper.short}

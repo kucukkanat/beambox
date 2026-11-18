@@ -145,7 +145,7 @@ impl Core {
             .chain(web.then_some(WEB_PORT))
             .chain(opts.ports.clone().unwrap_or_default())
             .collect();
-        let mut info = self.boot(self.reserve(spec, &ports).await?).await?;
+        let mut info = self.boot(self.reserve(spec, "sandbox", &ports).await?).await?;
         if web {
             self.start_web(&mut info).await?;
         }
@@ -183,11 +183,12 @@ impl Core {
         Ok(())
     }
 
-    /// Give `spec` a free name (unless it has one) and host ports for `guest_ports`, held as pending until `boot`.
-    async fn reserve(&self, mut spec: Spec, guest_ports: &[u16]) -> Result<Spec> {
+    /// Give `spec` a free `<prefix>-<n>` name (unless it has one) and host ports for `guest_ports`, held as pending
+    /// until `boot`.
+    async fn reserve(&self, mut spec: Spec, prefix: &str, guest_ports: &[u16]) -> Result<Spec> {
         let _one_at_a_time = self.picking.lock().await;
         if spec.name.is_empty() {
-            spec.name = self.free_name("sandbox").await?;
+            spec.name = self.free_name(prefix).await?;
         } else if self.pending.lock().unwrap().0.contains(&spec.name)
             || self.backend.list().await?.iter().any(|s| s.name == spec.name)
         {
@@ -464,11 +465,116 @@ impl Core {
         self.backend.snapshot(name, &snapshot).await.map(|_| snapshot)
     }
 
-    /// Delete a sandbox, keeping its harness's sign-in first.
+    /// Delete a sandbox, keeping its harness's sign-in first, then the save points of boxes that are gone. One
+    /// another box still boots from stays (microsandbox refuses it) until a later delete.
     pub async fn delete(&self, name: &str) -> Result<()> {
         self.save_login_of(name).await;
-        self.backend.delete(name).await
+        self.backend.delete(name).await?;
+        let mut alive: Vec<String> = self.backend.list().await?.into_iter().map(|s| s.name).collect();
+        alive.extend(self.pending.lock().unwrap().0.iter().cloned());
+        for point in self.all_save_points().await?.into_iter().filter(|p| !alive.contains(&p.owner)) {
+            let _ = self.backend.remove_snapshot(&point.reference).await;
+        }
+        Ok(())
     }
+
+    /// Every `<box>-<unix seconds>` snapshot `snapshot` took, but Beambox's own.
+    async fn all_save_points(&self) -> Result<Vec<Found>> {
+        let mut found: Vec<Found> = self
+            .backend
+            .list_snapshots()
+            .await?
+            .into_iter()
+            .filter(|reference| !reference.starts_with(BUILD_PREFIX))
+            .filter_map(|reference| {
+                let member = reference.rsplit_once(':').map_or(reference.as_str(), |(_, m)| m).to_string();
+                let (owner, secs) = member.rsplit_once('-')?;
+                let taken_at = secs.bytes().all(|b| b.is_ascii_digit()).then(|| secs.parse().ok()).flatten()?;
+                Some(Found { owner: owner.to_string(), point: SavePoint { snapshot: member.clone(), taken_at }, reference })
+            })
+            .collect();
+        found.sort_by_key(|f| std::cmp::Reverse(f.point.taken_at));
+        Ok(found)
+    }
+
+    async fn find_save_point(&self, snapshot: &str) -> Result<Found> {
+        let found = self.all_save_points().await?.into_iter().find(|p| p.point.snapshot == snapshot);
+        found.ok_or_else(|| format!("no save point named {snapshot}"))
+    }
+
+    /// A box's save points, newest first.
+    pub async fn save_points(&self, name: &str) -> Result<Vec<SavePoint>> {
+        Ok(self.all_save_points().await?.into_iter().filter(|p| p.owner == name).map(|p| p.point).collect())
+    }
+
+    pub async fn remove_save_point(&self, snapshot: &str) -> Result<()> {
+        self.backend.remove_snapshot(&self.find_save_point(snapshot).await?.reference).await
+    }
+
+    /// Boot `<box>-copy-<n>` from a save point, with its box's settings.
+    pub async fn copy_from(&self, snapshot: &str) -> Result<SandboxInfo> {
+        let found = self.find_save_point(snapshot).await?;
+        let source = self.info(&found.owner).await?;
+        self.boot_save_point(&source, String::new(), &format!("{}-copy", found.owner), found.reference).await
+    }
+
+    /// Replace a box with a new one of the same name and settings, booted from one of its save points.
+    pub async fn rewind(&self, name: &str, snapshot: &str) -> Result<SandboxInfo> {
+        let found = self.find_save_point(snapshot).await?;
+        if found.owner != name {
+            return Err(format!("no save point named {snapshot} for {name}"));
+        }
+        let source = self.info(name).await?;
+        self.save_login_of(name).await;
+        self.backend.delete(name).await?;
+        self.boot_save_point(&source, name.to_string(), name, found.reference)
+            .await
+            .map_err(|e| format!("{name} was deleted to rewind it, but booting it again failed: {e}"))
+    }
+
+    async fn info(&self, name: &str) -> Result<SandboxInfo> {
+        let all = self.backend.list().await?;
+        all.into_iter().find(|s| s.name == name).ok_or(format!("no sandbox named {name}"))
+    }
+
+    /// Snapshots hold the disk only, so the agent starts over, without a task, signed in like a new box.
+    async fn boot_save_point(&self, source: &SandboxInfo, name: String, prefix: &str, reference: String) -> Result<SandboxInfo> {
+        let spec = Spec {
+            name,
+            template: source.template.clone(),
+            image: agent::IMAGE.into(),
+            cpus: source.cpus,
+            memory_mib: source.memory_mib,
+            mount: source.mount.clone(),
+            network: source.network.clone(),
+            ports: vec![],
+            harness: source.harness.clone(),
+            snapshot: Some(reference),
+            setup: None,
+        };
+        let guests: Vec<u16> = source.ports.iter().map(|p| p.guest).collect();
+        let info = self.boot(self.reserve(spec, prefix, &guests).await?).await?;
+        if info.harness.is_some() {
+            self.restart_agent_session(&info.name).await?;
+        }
+        Ok(info)
+    }
+}
+
+/// A snapshot taken with `Core::snapshot`, as the app shows it.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SavePoint {
+    /// `<box>-<unix seconds>`.
+    pub snapshot: String,
+    pub taken_at: u64,
+}
+
+struct Found {
+    owner: String,
+    point: SavePoint,
+    /// The `<group>:<member>` name the backend takes.
+    reference: String,
 }
 
 /// Write a file only the current user can read: logins are as good as passwords.
@@ -923,5 +1029,158 @@ mod tests {
         assert_eq!(info.cpus, 2);
         let base = core.create(CreateOpts::default()).await.unwrap();
         assert_eq!(base.cpus, 1);
+    }
+
+    /// `a`: a codex box with a folder, no network and a published port, with save points at 100 and 200, and
+    /// snapshots of `a-1` and `ab` that aren't `a`'s.
+    async fn box_with_save_points() -> (Arc<FakeBackend>, Core) {
+        let (fake, core) = core_with(|_| true);
+        let opts = CreateOpts {
+            mount: Some("/work".into()),
+            network: Some("none".into()),
+            ports: Some(vec![3000]),
+            cpus: Some(3),
+            memory_mib: Some(3072),
+            ..named("a", "codex")
+        };
+        core.create(opts).await.unwrap();
+        for other in ["a-1", "ab"] {
+            core.create(CreateOpts { name: Some(other.into()), ..Default::default() }).await.unwrap();
+        }
+        for (name, secs) in [("a", 100), ("a", 200), ("a-1", 300), ("ab", 100)] {
+            core.snapshot(name, secs).await.unwrap();
+        }
+        (fake, core)
+    }
+
+    fn names(points: &[SavePoint]) -> Vec<&str> {
+        points.iter().map(|p| p.snapshot.as_str()).collect()
+    }
+
+    #[tokio::test]
+    async fn save_points_are_a_boxs_own_snapshots_newest_first() {
+        let (_, core) = box_with_save_points().await;
+        let points = core.save_points("a").await.unwrap();
+        assert_eq!(names(&points), ["a-200", "a-100"]);
+        assert_eq!(points[0].taken_at, 200);
+        assert_eq!(serde_json::to_value(&points[1]).unwrap(), serde_json::json!({ "snapshot": "a-100", "takenAt": 100 }));
+        assert_eq!(names(&core.save_points("a-1").await.unwrap()), ["a-1-300"]);
+        assert!(core.save_points("beambox-base").await.unwrap().is_empty(), "not the base snapshot");
+    }
+
+    #[tokio::test]
+    async fn a_copy_from_a_save_point_keeps_the_settings_on_free_ports_and_restarts_its_agent() {
+        let (fake, core) = box_with_save_points().await;
+        fake.envs.lock().unwrap().clear();
+        let copy = core.copy_from("a-100").await.unwrap();
+        assert_eq!(copy.name, "a-copy-1");
+        let spec = fake.specs.lock().unwrap().last().unwrap().clone();
+        assert_eq!(spec.snapshot.as_deref(), Some("a:a-100"));
+        assert_eq!(
+            (spec.cpus, spec.memory_mib, spec.harness.as_deref(), spec.template.as_str()),
+            (3, 3072, Some("codex"), "base")
+        );
+        assert_eq!((spec.mount.as_deref(), spec.network.as_str()), (Some("/work"), "none"));
+        assert_eq!(spec.ports, [Port { guest: 3000, host: 3001 }], "3000 is `a`'s");
+        assert!(spec.setup.is_none(), "the saved disk is already set up");
+        let envs = fake.envs.lock().unwrap();
+        assert_eq!(envs.len(), 1);
+        assert_eq!(envs[0].0, "a-copy-1");
+        let start = fake.execs.lock().unwrap().last().unwrap().1.clone();
+        assert!(start.starts_with("tmux -u new-session -d -s agent"), "{start}");
+        drop(envs);
+        assert_eq!(core.copy_from("a-200").await.unwrap().name, "a-copy-2");
+    }
+
+    #[tokio::test]
+    async fn rewinding_recreates_the_box_from_a_save_point_and_keeps_them_all() {
+        let fake = Arc::new(FakeBackend::default());
+        let (core, dir) = core_in_fresh_dir(fake.clone(), Arc::new(FakeSecrets::default()));
+        core.create(CreateOpts { mount: Some("/work".into()), ports: Some(vec![3000]), ..named("a", "claude-code") })
+            .await
+            .unwrap();
+        core.snapshot("a", 100).await.unwrap();
+        core.snapshot("a", 200).await.unwrap();
+        fake.write_file("a", CLAUDE_LOGIN, b"latest".to_vec()).await.unwrap();
+        let info = core.rewind("a", "a-100").await.unwrap();
+        assert_eq!(info.name, "a");
+        assert_eq!(std::fs::read(dir.join("logins/claude-code")).unwrap(), b"latest", "the login was saved first");
+        let spec = fake.specs.lock().unwrap().last().unwrap().clone();
+        assert_eq!(spec.snapshot.as_deref(), Some("a:a-100"));
+        assert_eq!((spec.mount.as_deref(), spec.harness.as_deref()), (Some("/work"), Some("claude-code")));
+        assert_eq!(spec.ports, [Port { guest: 3000, host: 3000 }]);
+        // Booted from the older disk, so it gets the newest login back, then its agent starts.
+        assert_eq!(fake.read_file("a", CLAUDE_LOGIN).await.unwrap(), b"latest");
+        assert!(fake.execs.lock().unwrap().last().unwrap().1.starts_with("tmux -u new-session -d -s agent"));
+        assert_eq!(names(&core.save_points("a").await.unwrap()), ["a-200", "a-100"]);
+        assert_eq!(core.backend.list().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_rewind_keeps_every_setting() {
+        let (fake, core) = box_with_save_points().await;
+        core.rewind("a", "a-200").await.unwrap();
+        let spec = fake.specs.lock().unwrap().last().unwrap().clone();
+        assert_eq!(
+            (spec.cpus, spec.memory_mib, spec.harness.as_deref(), spec.template.as_str()),
+            (3, 3072, Some("codex"), "base")
+        );
+        assert_eq!((spec.mount.as_deref(), spec.network.as_str()), (Some("/work"), "none"));
+        assert_eq!(spec.ports, [Port { guest: 3000, host: 3000 }]);
+    }
+
+    #[tokio::test]
+    async fn concurrent_copies_get_their_own_names() {
+        let (_, core) = box_with_save_points().await;
+        let (one, two) = tokio::join!(core.copy_from("a-100"), core.copy_from("a-100"));
+        let mut names = [one.unwrap().name, two.unwrap().name];
+        names.sort();
+        assert_eq!(names, ["a-copy-1", "a-copy-2"]);
+    }
+
+    #[tokio::test]
+    async fn a_save_point_left_behind_is_removed_by_a_later_delete() {
+        let (fake, core) = box_with_save_points().await;
+        // Say a copy still booted from it when `gone` was deleted, so it stayed.
+        fake.snapshots.lock().unwrap().insert("gone:gone-100".into());
+        core.delete("ab").await.unwrap();
+        let left: Vec<String> = fake.snapshots.lock().unwrap().iter().filter(|s| !s.starts_with(BUILD_PREFIX)).cloned().collect();
+        assert_eq!(left, ["a-1:a-1-300", "a:a-100", "a:a-200"]);
+    }
+
+    #[tokio::test]
+    async fn deleting_a_box_removes_its_save_points_only() {
+        let (fake, core) = box_with_save_points().await;
+        core.delete("a").await.unwrap();
+        let left: Vec<String> = fake.snapshots.lock().unwrap().iter().filter(|s| !s.starts_with(BUILD_PREFIX)).cloned().collect();
+        assert_eq!(left, ["a-1:a-1-300", "ab:ab-100"]);
+    }
+
+    #[tokio::test]
+    async fn a_save_point_can_be_removed() {
+        let (_, core) = box_with_save_points().await;
+        core.remove_save_point("a-100").await.unwrap();
+        assert_eq!(names(&core.save_points("a").await.unwrap()), ["a-200"]);
+        assert!(core.remove_save_point("a-100").await.unwrap_err().contains("a-100"));
+    }
+
+    #[tokio::test]
+    async fn an_unknown_save_point_is_named_in_the_error() {
+        let (fake, core) = box_with_save_points().await;
+        let before = fake.specs.lock().unwrap().len();
+        assert_eq!(core.copy_from("a-999").await.unwrap_err(), "no save point named a-999");
+        assert_eq!(core.rewind("a", "a-999").await.unwrap_err(), "no save point named a-999");
+        assert_eq!(core.rewind("a", "ab-100").await.unwrap_err(), "no save point named ab-100 for a");
+        assert_eq!(fake.specs.lock().unwrap().len(), before, "nothing booted");
+        assert!(core.backend.list().await.unwrap().iter().any(|s| s.name == "a"), "a is still there");
+    }
+
+    #[tokio::test]
+    async fn a_box_reports_its_folder_and_network() {
+        let (_, core) = box_with_save_points().await;
+        let a = core.backend.list().await.unwrap().remove(0);
+        assert_eq!((a.mount.as_deref(), a.network.as_str()), (Some("/work"), "none"));
+        let plain = core.create(CreateOpts::default()).await.unwrap();
+        assert_eq!((plain.mount, plain.network.as_str()), (None, "public"));
     }
 }

@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import type { Actions } from "./App.tsx";
 import { plainText } from "./ansi.ts";
 import type { Api, CreateOpts, Sandbox } from "./api.ts";
-import { type BoxState, bootStages, HELPERS, helperOf, needsYou, STATES, WORD } from "./box.ts";
+import { type BoxState, basename, bootStages, HELPERS, helperOf, needsYou, STATES, WORD } from "./box.ts";
 import { Button } from "./components/ui/button.tsx";
 import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover.tsx";
 import { HoldKey, Icon, Led, Tool } from "./keys.tsx";
@@ -12,8 +12,8 @@ import { cn, showError } from "./lib/utils.ts";
 import { useItemMotion } from "./motion.ts";
 import { sound } from "./sound.ts";
 
-/** A create that hasn't finished yet, shown as a booting card that narrates the boot. */
-export type Pending = { id: number; opts: CreateOpts; preparing: boolean };
+/** A create (or a copy, with its `note`) that hasn't finished yet, shown as a booting card that narrates the boot. */
+export type Pending = { id: number; opts: CreateOpts; preparing: boolean; note?: string };
 export type Box = { sandbox: Sandbox; state: BoxState };
 
 type Props = {
@@ -278,6 +278,7 @@ function BoxCard({
           </span>
         </div>
         <h3>{s.name}</h3>
+        {s.mount && <Folder path={s.mount} />}
         <p className="task">
           {task ??
             (helper === "none"
@@ -318,6 +319,16 @@ export function Tools({
       />
       <HoldKey label="Throw away" onConfirm={() => actions.remove(name)} />
     </div>
+  );
+}
+
+/** The folder lent to a box, by name; the full path on hover. */
+export function Folder({ path }: { path: string }) {
+  return (
+    <span className="mono dim flex items-center gap-1.5" title={path}>
+      <Icon name="folder" size={14} />
+      {basename(path)}
+    </span>
   );
 }
 
@@ -401,7 +412,7 @@ function PendingCard({ pending }: { pending: Pending }) {
           <span className="helper-chip">{HELPERS[helper].short}</span>
         </div>
         <h3>{pending.opts.name ?? "New box"}</h3>
-        <p className="task">{pending.opts.task ?? HELPERS[helper].by}</p>
+        <p className="task">{pending.note ?? pending.opts.task ?? HELPERS[helper].by}</p>
       </div>
     </article>
   );

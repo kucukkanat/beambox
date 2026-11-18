@@ -64,7 +64,19 @@ pub enum Command {
     Fork { name: String },
     /// Save a sandbox's disk as a snapshot.
     Snapshot { name: String },
-    /// Delete a sandbox and its disk.
+    /// List a sandbox's save points (its snapshots), newest first.
+    Snapshots { name: String },
+    /// Start a copy, `<name>-copy-<n>`, from a save point. Its agent starts over on the saved files.
+    Copy { snapshot: String },
+    /// Rewind a sandbox to one of its save points: what changed since is lost. Its agent starts over.
+    Rewind {
+        name: String,
+        snapshot: String,
+        /// Don't ask first.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Delete a sandbox, its disk and its save points.
     Delete { name: String },
     /// Run a command in a sandbox and exit with its exit code.
     Exec {
@@ -289,6 +301,38 @@ pub async fn run(cli: &Cli, core: &Core, io: &mut Io<'_>) -> Result<i32> {
             let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?;
             let snapshot = core.snapshot(name, secs.as_secs()).await?;
             if cli.json { json(io, serde_json::json!({ "snapshot": snapshot }))? } else { done(io, format!("Saved snapshot {snapshot}"))? }
+        }
+        Command::Snapshots { name } => {
+            let points = core.save_points(name).await?;
+            if cli.json {
+                json(io, points)?
+            } else if points.is_empty() {
+                writeln!(io.stdout, "No save points yet. Take one with `beambox snapshot {name}`.").map_err(io_err)?
+            } else {
+                for point in points {
+                    writeln!(io.stdout, "{}", point.snapshot).map_err(io_err)?
+                }
+            }
+        }
+        Command::Copy { snapshot } => {
+            let info = core.copy_from(snapshot).await?;
+            if cli.json { json(io, &info)? } else { done(io, describe(&info))? }
+        }
+        Command::Rewind { name, snapshot, yes } => {
+            if !yes {
+                write!(io.stderr, "Rewind {name} to {snapshot}? What changed since is lost. [y/N] ").map_err(io_err)?;
+                let mut answer = String::new();
+                let mut byte = [0u8; 1];
+                while io.stdin.read(&mut byte).map_err(io_err)? == 1 && byte[0] != b'\n' {
+                    answer.push(byte[0] as char);
+                }
+                if !answer.trim().eq_ignore_ascii_case("y") {
+                    done(io, format!("Left {name} as it is"))?;
+                    return Ok(0);
+                }
+            }
+            let info = core.rewind(name, snapshot).await?;
+            if cli.json { json(io, &info)? } else { done(io, describe(&info))? }
         }
         Command::Delete { name } => {
             core.delete(name).await?;
@@ -697,6 +741,10 @@ mod tests {
             "stop a",
             "fork a",
             "snapshot a",
+            "snapshots a",
+            "copy a-100",
+            "rewind a a-100",
+            "rewind a a-100 --yes",
             "delete a",
             "exec a -- ls -la /",
             "shell a",
@@ -854,6 +902,39 @@ mod tests {
         let out = beambox(&core, "takeover a off", "").await;
         assert_eq!(out.stdout, "Take-over of a is off: the agent is running\n");
         assert!(fake.execs.lock().unwrap().iter().any(|(_, c)| c == &crate::core::takeover_command(false)));
+    }
+
+    #[tokio::test]
+    async fn save_points_list_copy_and_rewind_after_a_yes() {
+        let core = core();
+        beambox(&core, "create a -p 3000", "").await;
+        assert_eq!(beambox(&core, "snapshots a", "").await.stdout, "No save points yet. Take one with `beambox snapshot a`.\n");
+        core.snapshot("a", 100).await.unwrap();
+        core.snapshot("a", 200).await.unwrap();
+        assert_eq!(beambox(&core, "snapshots a", "").await.stdout, "a-200\na-100\n");
+        let json: serde_json::Value = serde_json::from_str(&beambox(&core, "--json snapshots a", "").await.stdout).unwrap();
+        assert_eq!(json[1], serde_json::json!({ "snapshot": "a-100", "takenAt": 100 }));
+        let copy = beambox(&core, "copy a-100", "").await;
+        assert_eq!((copy.code, copy.stdout.as_str()), (Ok(0), "a-copy-1 is running (base, ports 127.0.0.1:3001 → 3000)\n"));
+        let rewound = beambox(&core, "rewind a a-100 --yes", "").await;
+        assert_eq!((rewound.code, rewound.stdout.as_str()), (Ok(0), "a is running (base, ports 127.0.0.1:3000 → 3000)\n"));
+        assert!(beambox(&core, "copy a-999", "").await.code.unwrap_err().contains("a-999"));
+    }
+
+    #[tokio::test]
+    async fn rewind_asks_first_and_a_no_changes_nothing() {
+        let fake = Arc::new(FakeBackend::default());
+        let core = Core::with_port_probe(fake.clone(), Arc::new(FakeSecrets::default()), |_| true);
+        beambox(&core, "create a", "").await;
+        core.snapshot("a", 100).await.unwrap();
+        let booted = fake.specs.lock().unwrap().len();
+        let out = beambox(&core, "rewind a a-100", "n\n").await;
+        assert_eq!((out.code, out.stdout.as_str()), (Ok(0), "Left a as it is\n"));
+        assert!(out.stderr.starts_with("Rewind a to a-100?"), "{}", out.stderr);
+        assert_eq!(fake.specs.lock().unwrap().len(), booted, "nothing deleted or booted");
+        let out = beambox(&core, "rewind a a-100", "y\n").await;
+        assert_eq!(out.stdout, "a is running (base)\n");
+        assert_eq!(fake.specs.lock().unwrap().len(), booted + 1);
     }
 
     #[tokio::test]

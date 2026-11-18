@@ -113,7 +113,15 @@ export function Tool({
  * A key that fires only after a full press-and-hold (pointer, or Space/Enter held): a ring fills over
  * `HOLD_MS` with a rising tone, and springs back if let go early.
  */
-export function HoldKey({ label, onConfirm }: { label: string; onConfirm(): void }) {
+export function HoldKey({
+  label,
+  icon = "trash",
+  onConfirm,
+}: {
+  label: string;
+  icon?: keyof typeof PATHS;
+  onConfirm(): void;
+}) {
   const [holding, setHolding] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const stopTone = useRef<() => void>(undefined);
@@ -169,7 +177,7 @@ export function HoldKey({ label, onConfirm }: { label: string; onConfirm(): void
             strokeDashoffset={holding ? 0 : 1}
           />
         </svg>
-        <Icon name="trash" />
+        <Icon name={icon} />
       </button>
       <span aria-hidden="true">{holding ? "Keep holding" : label}</span>
     </div>

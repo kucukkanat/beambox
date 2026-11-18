@@ -1222,6 +1222,83 @@ body {
   flex-wrap: wrap;
 }
 
+/* Rewinding to a save point: the screen scrubs backwards like a tape, until the box is back. */
+.rewinding .screen-inner {
+  animation: rewind 0.6s linear infinite;
+  filter: saturate(0.3) blur(0.6px);
+}
+.rewinding .screen-inner::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.12) 0 2px, transparent 2px 9px);
+  animation: rewind-lines 0.35s linear infinite;
+}
+.save-points {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  overflow-x: auto;
+  padding: 8px 4px 12px;
+  margin: 0;
+  list-style: none;
+}
+.save-point {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 112px;
+  padding: 8px 10px 10px;
+  border-radius: 6px;
+  background: var(--key);
+  color: var(--ink);
+  border: 1px solid var(--edge);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+  transition: transform 0.15s;
+}
+.save-point:nth-child(odd) {
+  transform: rotate(-2deg);
+}
+.save-point:nth-child(even) {
+  transform: rotate(1.5deg);
+}
+.save-point:hover,
+.save-point[aria-pressed="true"] {
+  transform: rotate(0) translateY(-3px);
+  box-shadow:
+    0 0 0 2px var(--accent),
+    0 4px 10px rgba(0, 0, 0, 0.3);
+}
+.save-n {
+  font-size: 20px;
+  line-height: 1;
+}
+.save-now {
+  padding: 18px 12px;
+  border: 2px dashed var(--ink-2);
+  border-radius: 6px;
+  font-weight: 750;
+  font-size: 12px;
+}
+@keyframes rewind {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
+}
+@keyframes rewind-lines {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-9px);
+  }
+}
 @keyframes breathe {
   0%,
   100% {

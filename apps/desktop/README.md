@@ -28,6 +28,14 @@ Beambox desktop: a Tauri 2 app that gives each AI agent its own computer, a micr
     Agent boxes get the **AGENT / YOU lever**: YOU freezes the harness (SIGSTOP) so you can use the terminal and
     desktop undisturbed; handing back (SIGCONT) can type a note into the agent's session, so it knows what you
     changed. `Esc` goes back to the shelf.
+  - **Save points** (`src/SavePoints.tsx`, below the box view's screen): the box's snapshots `<name>-<unix secs>`
+    as photo cards, oldest to newest, ending at NOW; the strip reloads after **Save point**. Pick one to **Try
+    another way from here** (boot `<name>-copy-<n>` from it: back on the shelf, a booting card says "Copy of
+    `<name>` · from save point `<n>`") or hold **Rewind to here** (recreate the box from it, same name, with a
+    rewind sound and screen animation) or **Remove**. Copies and rewinds keep the box's settings and folder, get
+    free host ports, and start the agent over without its task: snapshots hold the disk, not memory. Throwing a box
+    away also deletes its save points (one a copy still boots from stays until a later delete).
+  - The card and the box view show the lent folder (`SandboxInfo.mount`).
   - Files opens at `/workspace` (the root if there's none), hides microsandbox's `/.msb` and opens symlinks to
     folders as folders. Web previews list the published ports, with the desktop's VNC port as the Screen rather than
     as a web page.
@@ -132,6 +140,9 @@ beambox put web /workspace/notes.txt notes.txt # or pipe into stdin; `cat` and `
 beambox logs web -f
 beambox stats web
 beambox start|stop|fork|snapshot|delete web
+beambox snapshots web                          # its save points, newest first
+beambox copy web-1795000000                    # start web-copy-1 from a save point
+beambox rewind web web-1795000000              # asks y/N first; --yes skips that
 beambox takeover fixer on                      # freeze the agent; `off` hands back
 beambox credentials set anthropic              # reads the key from stdin, hidden at a terminal
 beambox credentials list                       # names only; `remove <name>` forgets one
@@ -213,6 +224,8 @@ Things the crate doesn't make obvious. Each cost a failed run to find; check her
   `msb` by hand. Without `MSB_HOME` it creates `~/.microsandbox`, which Beambox must never touch.
 - **Snapshot names are `<group>:<member>`.** `handle.snapshot("x")` on sandbox `s` creates `s:x`, and lookups
   need the full name. Remove one with `msb snapshot rm s:x`.
+- **Network policy doesn't map back to a name**, so `create` stores `Spec::network` as the `beambox.network` label
+  (boxes made before it read as `public`). The `/workspace` folder is read back from the config's bind mount.
 - **Booting from a snapshot with labels:** `Sandbox::restore` can't set labels. Use
   `Sandbox::builder(name).override_snapshot(r)` and the builder's own `create_detached()`. Going through
   `build()` + `Sandbox::create_detached(config)` fails with "image source is required".

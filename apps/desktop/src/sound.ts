@@ -106,6 +106,12 @@ export const sound = {
     noise(0.3, { gain: 0.4, freq: 500 });
     tone(220, 0.35, { type: "sawtooth", gain: 0.025, slide: 50 });
   },
+  /** A tape spooling backwards. */
+  rewind: () => {
+    noise(0.5, { gain: 0.25, freq: 3000 });
+    tone(900, 0.5, { type: "sawtooth", gain: 0.02, slide: 300 });
+    tone(1200, 0.25, { type: "triangle", gain: 0.05, slide: 1800, at: 0.5 });
+  },
   /** A tone rising over a full hold; call the result to stop it. */
   hold(): () => void {
     const c = audio();

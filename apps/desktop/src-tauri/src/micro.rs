@@ -1,12 +1,14 @@
 //! `SandboxBackend` on the microsandbox SDK. Beambox metadata is stored as sandbox labels.
 use crate::backend::{DirEntry, ExecResult, Metrics, Port, Result, SandboxBackend, SandboxInfo, Spec, Status};
 use async_trait::async_trait;
-use microsandbox::sandbox::{FsEntryKind, SandboxHandle, SandboxStatus};
+use microsandbox::sandbox::{FsEntryKind, SandboxHandle, SandboxStatus, VolumeMount};
 use microsandbox::{NetworkPolicy, NetworkProfile, Sandbox};
 use std::net::{IpAddr, Ipv4Addr};
 
 const TEMPLATE: &str = "beambox.template";
 const HARNESS: &str = "beambox.harness";
+/// The `Spec::network` name, as the stored policy can't be mapped back to it.
+const NETWORK: &str = "beambox.network";
 
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
@@ -23,6 +25,10 @@ fn info(handle: &SandboxHandle) -> Result<SandboxInfo> {
     let spec = handle.config().map_err(err)?.spec;
     let label = |key: &str| spec.labels.get(key).cloned();
     let ports = spec.network.ports.iter().map(|p| Port { guest: p.guest_port, host: p.host_port }).collect();
+    let mount = spec.mounts.iter().find_map(|m| match m {
+        VolumeMount::Bind { host, guest, .. } if guest == "/workspace" => Some(host.to_string_lossy().into_owned()),
+        _ => None,
+    });
     Ok(SandboxInfo {
         name: handle.name().to_string(),
         template: label(TEMPLATE).unwrap_or_else(|| "custom".into()),
@@ -36,6 +42,9 @@ fn info(handle: &SandboxHandle) -> Result<SandboxInfo> {
         memory_mib: spec.resources.memory_mib,
         harness: label(HARNESS),
         ports,
+        mount,
+        // Boxes made before the label existed got the default.
+        network: label(NETWORK).unwrap_or_else(|| "public".into()),
         web_url: None,
     })
 }
@@ -60,7 +69,8 @@ impl SandboxBackend for MicroBackend {
         }
             .cpus(spec.cpus)
             .memory(spec.memory_mib)
-            .label(TEMPLATE, &spec.template);
+            .label(TEMPLATE, &spec.template)
+            .label(NETWORK, &spec.network);
         if let Some(harness) = &spec.harness {
             builder = builder.label(HARNESS, harness);
         }

@@ -1,7 +1,7 @@
 import { MotionConfig } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Toaster, toast } from "sonner";
-import type { AgentStatus, Api, CreateOpts, Sandbox, Status } from "./api.ts";
+import type { AgentStatus, Api, CreateOpts, Harness, Sandbox, Status } from "./api.ts";
 import { BoxView, type Mode } from "./BoxView.tsx";
 import { boxState, needsYou } from "./box.ts";
 import { HypervisorCard } from "./HypervisorCard.tsx";
@@ -21,6 +21,10 @@ export type Actions = {
   restartAgent(name: string): void;
   open(name: string, mode?: Mode): void;
   dismissSignIn(name: string): void;
+  /** Boot `<name>-copy-<n>` from save point number `n` of `source`. */
+  copyFrom(source: Sandbox, snapshot: string, n: number): void;
+  /** Recreate a box from its save point number `n`. */
+  rewind(name: string, snapshot: string, n: number): void;
 };
 
 const UNDO_MS = 5000;
@@ -83,6 +87,9 @@ export function App({ api }: { api: Api }) {
   // Jobs of boxes made by this window: the backend doesn't keep them.
   const [tasks, setTasks] = useState<Record<string, string>>({});
   const [sheet, setSheet] = useState(false);
+  // Bumped after each save point, so an open save point strip reloads.
+  const [saves, setSaves] = useState(0);
+  const [rewinding, setRewinding] = useState<string[]>([]);
   // `n` remounts the view, so a repeated `beambox desktop` request switches back to the Screen.
   const [opened, setOpened] = useState<{ name: string; mode: Mode | undefined; n: number } | null>(null);
   const [agents, setAgent, forgetAgent] = useAgents(api, sandboxes);
@@ -186,7 +193,46 @@ export function App({ api }: { api: Api }) {
         toast.success(`Started the agent in ${name} again`);
       }, showError);
     },
-    snapshot: (name) => void api.snapshot(name).then((s) => toast.success(`Made save point ${s}`), showError),
+    snapshot: (name) =>
+      void api.snapshot(name).then((s) => {
+        toast.success(`Made save point ${s}`);
+        setSaves((n) => n + 1);
+      }, showError),
+    copyFrom: (source, snapshot, n) => {
+      const id = Date.now() + Math.random();
+      const opts: CreateOpts = {
+        cpus: source.cpus,
+        memoryMib: source.memoryMib,
+        desktop: source.template === "desktop",
+        ...(source.harness && { harness: source.harness as Harness }),
+        ...(source.mount && { mount: source.mount }),
+      };
+      const note = `Copy of ${source.name} · from save point ${n}`;
+      setPending((all) => [...all, { id, opts, preparing: false, note }]);
+      // Back to the shelf, where the copy boots.
+      setOpened(null);
+      void api
+        .copyFrom(snapshot)
+        .then((s) => {
+          sound.ready();
+          toast.success(`${s.name} is ready`);
+          return refresh();
+        }, showError)
+        .finally(() => setPending((all) => all.filter((p) => p.id !== id)));
+    },
+    rewind: (name, snapshot, n) => {
+      sound.rewind();
+      setRewinding((all) => [...all, name]);
+      void api
+        .rewind(name, snapshot)
+        .then(() => {
+          toast.success(`Rewound ${name} to save point ${n}`);
+          // Same name, new VM: remount the view so its terminal and screen connect to it.
+          setOpened((o) => (o?.name === name ? { ...o, n: o.n + 1 } : o));
+          return refresh();
+        }, showError)
+        .finally(() => setRewinding((all) => all.filter((r) => r !== name)));
+    },
     remove: (name) => {
       sound.trash();
       setDeleting((all) => [...all, name]);
@@ -246,6 +292,8 @@ export function App({ api }: { api: Api }) {
             state={box.state}
             initialMode={opened.mode}
             actions={actions}
+            saves={saves}
+            rewinding={rewinding.includes(box.sandbox.name)}
             onTakeover={(on, note) => void takeover(box.sandbox.name, on, note)}
             onTerminal={() => dropSignIn(box.sandbox.name)}
             onBack={() => setOpened(null)}

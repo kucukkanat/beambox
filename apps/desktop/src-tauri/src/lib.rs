@@ -10,7 +10,7 @@ pub mod ports;
 pub mod proxy;
 
 use crate::backend::{DirEntry, Metrics, Result, SandboxInfo};
-use crate::core::{Core, CreateOpts};
+use crate::core::{Core, CreateOpts, SavePoint};
 use microsandbox::sandbox::exec::{ExecControl, ExecSink};
 use microsandbox::ExecEvent;
 use std::collections::HashMap;
@@ -115,6 +115,26 @@ async fn fork(app: State<'_, App>, name: String) -> Result<SandboxInfo> {
 async fn snapshot(app: State<'_, App>, name: String) -> Result<String> {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?;
     app.core.snapshot(&name, secs.as_secs()).await
+}
+
+#[tauri::command]
+async fn save_points(app: State<'_, App>, name: String) -> Result<Vec<SavePoint>> {
+    app.core.save_points(&name).await
+}
+
+#[tauri::command]
+async fn copy_from(app: State<'_, App>, snapshot: String) -> Result<SandboxInfo> {
+    app.core.copy_from(&snapshot).await
+}
+
+#[tauri::command]
+async fn rewind(app: State<'_, App>, name: String, snapshot: String) -> Result<SandboxInfo> {
+    app.core.rewind(&name, &snapshot).await
+}
+
+#[tauri::command]
+async fn remove_save_point(app: State<'_, App>, snapshot: String) -> Result<()> {
+    app.core.remove_save_point(&snapshot).await
 }
 
 #[tauri::command]
@@ -368,6 +388,10 @@ pub fn run(open: Option<String>) {
             stop,
             fork,
             snapshot,
+            save_points,
+            copy_from,
+            rewind,
+            remove_save_point,
             delete,
             list_dir,
             read_file,

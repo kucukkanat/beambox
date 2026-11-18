@@ -1,12 +1,12 @@
 ---
-status: approved       # draft | approved | built | shipped
+status: built          # draft | approved | built | shipped
 size: large
 created: 2026-11-18T18:20Z
 shipped:
 diff:
 new_deps: 0
 bounces: 0
-review_findings: 0
+review_findings: 7
 ---
 
 # Save points: list, copy from and rewind to a box's snapshots
@@ -68,6 +68,28 @@ and tokens. No new dependencies.
 - Save points are disk-only. The UI says that the agent starts over on the saved files.
 - Throwing a box away also removes its save points (after the undo window, as the delete runs only then).
 - Builds in parallel with `shelf-ui`. Before shipping it rebases on it and mounts `SavePoints` in the box view.
+- Built in parallel with `shelf-ui`, then rebased on it: `SavePoints` sits below the screen in `BoxView`, Rewind and
+  Remove are shelf-ui's `HoldKey` (1.2 s, with an icon prop added), the box view's **Save point** key bumps a
+  counter that reloads the strip, and rewind plays `sound.rewind()` while the screen runs a tape-scrub animation
+  (`.rewinding` in `index.css`) until the box is back, then the view remounts on the new VM.
+- **Try another way from here** goes back to the shelf, where the copy shows as a booting pending card whose line
+  reads "Copy of `<name>` · from save point `<n>`" until `copy_from` returns.
+- The card and the box view show the lent folder's name (full path on hover).
+- A save point is a snapshot whose member is `<box>-<digits>` and whose group isn't a `beambox-build-` one; the
+  box is everything before the last `-`. The app and CLI name it by its member (`a-100`); the core looks up its
+  `<group>:<member>` reference.
+- `rewind` refuses a save point of another box ("no save point named ab-100 for a").
+- Copies and rewinds run no `setup` (the saved disk has it) and, like a new box, copy in the harness's latest
+  login when no key is stored, then start the agent without a task.
+- `delete` deletes the box first, then the save points of every box that no longer exists, ignoring failures:
+  microsandbox refuses a snapshot another box still boots from, so it stays and goes with a later delete. Without
+  that, a new box with the old name would inherit it.
+- A copy's name is picked under the same lock as other creates, so concurrent copies get `-copy-1` and `-copy-2`.
+  A failed boot after a rewind's delete says the box was deleted; its save points stay.
+- After a rewind the app remounts the box view (same name, new VM) so the terminal and desktop reconnect.
+- `network` is stored as the `beambox.network` label (the stored policy can't be mapped back to a name); boxes
+  made before that report `public`. `mount` is read from the config's `/workspace` bind mount.
+- `beambox rewind` without `--yes` asks on stderr; anything but `y` prints "Left `<name>` as it is" and exits 0.
 
 ## Out of scope
 - Memory snapshots, so the agent's conversation is not resumed. Screenshots on save point cards. Automatic save

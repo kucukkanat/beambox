@@ -16,6 +16,8 @@ const sandbox = (over: Partial<Sandbox> = {}): Sandbox => ({
   memoryMib: 1024,
   harness: null,
   ports: [],
+  mount: null,
+  network: "public",
   ...over,
 });
 
@@ -31,6 +33,10 @@ function fakeApi(
     stop: vi.fn(async () => {}),
     fork: vi.fn(async () => sandbox({ name: "a-fork-1" })),
     snapshot: vi.fn(async () => "a-1"),
+    savePoints: vi.fn(async () => []),
+    copyFrom: vi.fn(async () => sandbox({ name: "a-copy-1" })),
+    rewind: vi.fn(async () => sandbox()),
+    removeSavePoint: vi.fn(async () => {}),
     delete: vi.fn(async () => {}),
     listDir: vi.fn(async () => []),
     readFile: vi.fn(async () => new Uint8Array()),
@@ -707,5 +713,64 @@ describe("hypervisor card", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Enable Windows Hypervisor Platform" }));
     expect(api.enableHypervisor).toHaveBeenCalledOnce();
     expect(await screen.findByText(/Restart Windows/)).toBeInTheDocument();
+  });
+});
+
+describe("save points", () => {
+  beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }));
+  const points = [
+    { snapshot: "a-200", takenAt: 200 },
+    { snapshot: "a-100", takenAt: 100 },
+  ];
+  async function openBox(api: Api) {
+    render(<App api={api} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Open a" }));
+    return screen.findByRole("region", { name: "Save points" });
+  }
+
+  it("shows the lent folder on the card and in the box view", async () => {
+    const api = fakeApi([sandbox({ mount: "/Users/me/project" })]);
+    render(<App api={api} />);
+    expect(within(await card("a")).getByTitle("/Users/me/project")).toHaveTextContent("project");
+    await userEvent.click(screen.getByRole("button", { name: "Open a" }));
+    expect(await screen.findByTitle("/Users/me/project")).toBeInTheDocument();
+  });
+
+  it("reloads the strip after Save point in the box view", async () => {
+    const api = fakeApi([sandbox()]);
+    await openBox(api);
+    expect(api.savePoints).toHaveBeenCalledTimes(1);
+    await userEvent.click(screen.getByRole("button", { name: "Save point" }));
+    await waitFor(() => expect(api.savePoints).toHaveBeenCalledTimes(2));
+  });
+
+  it("starts a copy that boots on the shelf with where it came from", async () => {
+    const api = fakeApi([sandbox({ harness: "codex" })]);
+    api.savePoints = vi.fn(async () => points);
+    api.copyFrom = vi.fn(() => new Promise<Sandbox>(() => {}));
+    const strip = await openBox(api);
+    await userEvent.click(await within(strip).findByRole("button", { name: /^Save point 1, / }));
+    await userEvent.click(within(strip).getByRole("button", { name: "Try another way from here" }));
+    expect(api.copyFrom).toHaveBeenCalledExactlyOnceWith("a-100");
+    const booting = await screen.findByRole("article", { name: "New box, getting ready" });
+    expect(within(booting).getByText("Copy of a · from save point 1")).toBeInTheDocument();
+  });
+
+  it("rewinds the box on a held Rewind to here, not a short press", async () => {
+    const api = fakeApi([sandbox()]);
+    api.savePoints = vi.fn(async () => points);
+    const strip = await openBox(api);
+    await userEvent.click(await within(strip).findByRole("button", { name: /^Save point 2, / }));
+    const key = within(strip).getByRole("button", { name: "Rewind to here: press and hold" });
+    fireEvent.pointerDown(key);
+    await act(() => vi.advanceTimersByTimeAsync(600));
+    fireEvent.pointerUp(key);
+    await act(() => vi.advanceTimersByTimeAsync(2000));
+    expect(api.rewind).not.toHaveBeenCalled();
+    fireEvent.pointerDown(key);
+    await act(() => vi.advanceTimersByTimeAsync(1200));
+    expect(api.rewind).toHaveBeenCalledExactlyOnceWith("a", "a-200");
+    expect(await screen.findByText("Rewound a to save point 2")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "a" })).toBeInTheDocument();
   });
 });

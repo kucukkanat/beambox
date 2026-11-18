@@ -50,6 +50,10 @@ pub struct SandboxInfo {
     pub memory_mib: u32,
     pub harness: Option<String>,
     pub ports: Vec<Port>,
+    /// Host folder mounted at `/workspace`.
+    pub mount: Option<String>,
+    /// `public`, `none` or `all`, as in `Spec`.
+    pub network: String,
     /// The desktop in a browser, when it was created with `web`. Only known to the create that set it up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_url: Option<String>,
@@ -156,6 +160,8 @@ pub mod fake {
                 memory_mib: spec.memory_mib,
                 harness: spec.harness.clone(),
                 ports: spec.ports.clone(),
+                mount: spec.mount.clone(),
+                network: spec.network.clone(),
                 web_url: None,
             };
             self.specs.lock().unwrap().push(spec);

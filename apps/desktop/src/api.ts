@@ -15,7 +15,13 @@ export type Sandbox = {
   /** The agent harness running in it, for agent sandboxes. */
   harness: string | null;
   ports: Port[];
+  /** Host folder mounted at /workspace. */
+  mount: string | null;
+  /** `public`, `none` or `all`. */
+  network: string;
 };
+/** A snapshot of a box's disk, `<box>-<unix seconds>`. */
+export type SavePoint = { snapshot: string; takenAt: number };
 export type Harness = "claude-code" | "codex" | "opencode";
 /** Everything left out gets the Rust core's default (base, 1 vCPU, 1 GiB, auto name, public network). */
 export type CreateOpts = {
@@ -46,6 +52,13 @@ export type Api = {
   stop(name: string): Promise<void>;
   fork(name: string): Promise<Sandbox>;
   snapshot(name: string): Promise<string>;
+  /** A box's save points, newest first. */
+  savePoints(name: string): Promise<SavePoint[]>;
+  /** Boot `<box>-copy-<n>` from a save point; its agent starts over on the saved files. */
+  copyFrom(snapshot: string): Promise<Sandbox>;
+  /** Recreate the box from one of its save points; what changed since is lost. */
+  rewind(name: string, snapshot: string): Promise<Sandbox>;
+  removeSavePoint(snapshot: string): Promise<void>;
   delete(name: string): Promise<void>;
   listDir(name: string, path: string): Promise<DirEntry[]>;
   readFile(name: string, path: string): Promise<Uint8Array>;
@@ -97,6 +110,10 @@ export const tauriApi: Api = {
   stop: (name) => invoke("stop", { name }),
   fork: (name) => invoke("fork", { name }),
   snapshot: (name) => invoke("snapshot", { name }),
+  savePoints: (name) => invoke("save_points", { name }),
+  copyFrom: (snapshot) => invoke("copy_from", { snapshot }),
+  rewind: (name, snapshot) => invoke("rewind", { name, snapshot }),
+  removeSavePoint: (snapshot) => invoke("remove_save_point", { snapshot }),
   delete: (name) => invoke("delete", { name }),
   listDir: (name, path) => invoke("list_dir", { name, path }),
   // Files cross IPC as raw bytes; names travel URI-encoded in headers.
