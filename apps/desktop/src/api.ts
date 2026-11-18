@@ -19,6 +19,8 @@ export type Sandbox = {
   mount: string | null;
   /** `public`, `none` or `all`. */
   network: string;
+  /** When it last started, in Unix milliseconds, while it runs. */
+  startedAt?: number | null;
 };
 /** A snapshot of a box's disk, `<box>-<unix seconds>`. */
 export type SavePoint = { snapshot: string; takenAt: number };

@@ -207,11 +207,12 @@ function NeedsCard({ box, actions }: { box: Box; actions: Actions }) {
   );
 }
 
-// When this window first saw each box run. Outside the cards: the shelf unmounts while a box is open.
+// When this window first saw each box run, for boxes whose start time isn't known. Outside the cards: the shelf
+// unmounts while a box is open.
 const runningSince = new Map<string, number>();
 
-/** How long a box has been running, counted from when this window first saw it run. */
-function useUptime(name: string, running: boolean) {
+/** How long a box has been running: since it started, or else since this window first saw it run. */
+function useUptime(name: string, running: boolean, startedAt?: number | null) {
   const [, tick] = useState(0);
   useEffect(() => {
     if (!running) return void runningSince.delete(name);
@@ -220,7 +221,8 @@ function useUptime(name: string, running: boolean) {
     const timer = setInterval(() => tick((n) => n + 1), 30_000);
     return () => clearInterval(timer);
   }, [name, running]);
-  const since = runningSince.get(name);
+  if (!running) return null;
+  const since = startedAt ?? runningSince.get(name);
   if (since === undefined) return null;
   const minutes = Math.round((Date.now() - since) / 60_000);
   return minutes < 1
@@ -244,7 +246,7 @@ function BoxCard({
   const s = box.sandbox;
   const helper = helperOf(s);
   const running = s.status === "running";
-  const uptime = useUptime(s.name, running);
+  const uptime = useUptime(s.name, running, s.startedAt);
   return (
     <article className="box" aria-label={s.name}>
       <div className="screws" aria-hidden="true">

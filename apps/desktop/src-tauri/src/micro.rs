@@ -29,15 +29,18 @@ fn info(handle: &SandboxHandle) -> Result<SandboxInfo> {
         VolumeMount::Bind { host, guest, .. } if guest == "/workspace" => Some(host.to_string_lossy().into_owned()),
         _ => None,
     });
+    let status = match handle.status_snapshot() {
+        SandboxStatus::Created | SandboxStatus::Starting => Status::Booting,
+        SandboxStatus::Running | SandboxStatus::Draining => Status::Running,
+        SandboxStatus::Paused | SandboxStatus::Stopped => Status::Stopped,
+        SandboxStatus::Crashed => Status::Crashed,
+    };
+    // The record changes when the sandbox starts or stops, so while it runs this is when it started.
+    let started_at = handle.updated_at().filter(|_| matches!(status, Status::Running)).map(|t| t.timestamp_millis());
     Ok(SandboxInfo {
         name: handle.name().to_string(),
         template: label(TEMPLATE).unwrap_or_else(|| "custom".into()),
-        status: match handle.status_snapshot() {
-            SandboxStatus::Created | SandboxStatus::Starting => Status::Booting,
-            SandboxStatus::Running | SandboxStatus::Draining => Status::Running,
-            SandboxStatus::Paused | SandboxStatus::Stopped => Status::Stopped,
-            SandboxStatus::Crashed => Status::Crashed,
-        },
+        status,
         cpus: spec.resources.cpus,
         memory_mib: spec.resources.memory_mib,
         harness: label(HARNESS),
@@ -45,6 +48,7 @@ fn info(handle: &SandboxHandle) -> Result<SandboxInfo> {
         mount,
         // Boxes made before the label existed got the default.
         network: label(NETWORK).unwrap_or_else(|| "public".into()),
+        started_at,
         web_url: None,
     })
 }

@@ -16,4 +16,8 @@ describe("plainText", () => {
   it("keeps tabs and newlines and drops other control characters", () => {
     expect(plainText("a\tb\x07\x08\nc")).toBe("a\tb\nc");
   });
+
+  it("drops mouse reports a shell echoed back", () => {
+    expect(plainText("root@sb:/# 35;18;7M35;19;7M<35;20;6m\nfree")).toBe("root@sb:/# \nfree");
+  });
 });

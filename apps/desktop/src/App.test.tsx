@@ -199,6 +199,12 @@ describe("shelf", () => {
     await waitFor(() => expect(box.querySelector("pre")?.textContent).toBe("hello\nworld"));
   });
 
+  it("counts a box's running time from when it started", async () => {
+    render(<App api={fakeApi([sandbox({ startedAt: Date.now() - 90 * 60_000 })])} />);
+    const box = await card("a");
+    expect(within(box).getByText(/1 h 30 min/)).toBeInTheDocument();
+  });
+
   it("Sleep calls stop, Wake calls start, and an asleep box shows its shutter", async () => {
     const api = fakeApi([sandbox(), sandbox({ name: "b", status: "stopped" })]);
     render(<App api={api} />);

@@ -10,6 +10,8 @@ const SEQUENCES = new RegExp(
   ].join("|"),
   "g",
 );
+// Mouse reports (`ESC[<35;18;7M`) a shell echoed after its line editor ate the `ESC[<`: terminal input, not output.
+const MOUSE_REPORTS = /(?:<)?\d{1,3};\d{1,4};\d{1,4}[Mm]/g;
 // The other control characters, but tab and newline.
 const CONTROLS = new RegExp(
   `[${String.fromCharCode(0)}-${String.fromCharCode(8)}${String.fromCharCode(11)}-${String.fromCharCode(31)}${String.fromCharCode(127)}]`,
@@ -23,6 +25,7 @@ const CONTROLS = new RegExp(
 export function plainText(raw: string): string {
   return raw
     .replace(SEQUENCES, "")
+    .replace(MOUSE_REPORTS, "")
     .replace(/\r+\n/g, "\n")
     .split("\n")
     .map((line) => line.slice(line.lastIndexOf("\r") + 1))

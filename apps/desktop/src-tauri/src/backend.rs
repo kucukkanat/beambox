@@ -54,6 +54,9 @@ pub struct SandboxInfo {
     pub mount: Option<String>,
     /// `public`, `none` or `all`, as in `Spec`.
     pub network: String,
+    /// When it last started, in Unix milliseconds, while it runs; unknown otherwise.
+    #[serde(default)]
+    pub started_at: Option<i64>,
     /// The desktop in a browser, when it was created with `web`. Only known to the create that set it up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_url: Option<String>,
@@ -162,6 +165,7 @@ pub mod fake {
                 ports: spec.ports.clone(),
                 mount: spec.mount.clone(),
                 network: spec.network.clone(),
+                started_at: None,
                 web_url: None,
             };
             self.specs.lock().unwrap().push(spec);
