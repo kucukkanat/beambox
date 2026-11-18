@@ -12,13 +12,36 @@ const workflow = read("../../../.github/workflows/desktop-image.yml");
 // biome-ignore lint/suspicious/noTemplateCurlyInString: a GitHub Actions expression, not a template
 const PUSH = "${{ startsWith(github.ref, 'refs/tags/desktop-v') }}";
 
-it("the Dockerfile runs install.sh from the copied folder and starts the desktop in the foreground", () => {
+it("the Dockerfile installs the packages in a layer the desktop's files don't invalidate", () => {
   assert.match(dockerfile, /^FROM debian:trixie-slim$/m);
-  assert.match(dockerfile, /^COPY \. \/tmp\/beambox-desktop\/?$/m);
-  assert.match(dockerfile, /^RUN sh \/tmp\/beambox-desktop\/install\.sh && rm -rf \/tmp\/beambox-desktop$/m);
-  assert.match(dockerfile, /^CMD \["beambox-desktop"\]$/m);
+  const steps = [
+    "COPY install.sh /tmp/beambox-desktop/install.sh",
+    "RUN sh /tmp/beambox-desktop/install.sh packages",
+    "COPY . /tmp/beambox-desktop",
+    "RUN sh /tmp/beambox-desktop/install.sh files && rm -rf /tmp/beambox-desktop",
+    // A build arg changes on every release, and a changed arg reruns every RUN after it.
+    "ARG VERSION",
+    'CMD ["beambox-desktop"]',
+  ].map((step) => dockerfile.indexOf(`\n${step}`));
+  assert.ok(!steps.includes(-1), `missing a step: ${steps}`);
+  assert.deepEqual(
+    steps,
+    steps.toSorted((a, b) => a - b),
+  );
   for (const label of ["source", "licenses", "version"]) {
     has(dockerfile, `org.opencontainers.image.${label}=`);
+  }
+});
+
+it("install.sh sets dpkg's filters before it installs, and does both steps when given no step", () => {
+  const install = read("../image/install.sh");
+  assert.ok(install.indexOf("/etc/dpkg/dpkg.cfg.d/beambox-desktop") < install.indexOf("apt-get install"));
+  has(install, 'if [ "$1" != files ]; then');
+  has(install, '[ "$1" = packages ] && exit 0');
+  // The dock's 48 px icons and the weights the desktop uses stay.
+  assert.doesNotMatch(install, /Papirus\*?\/(16|48|64)x/);
+  for (const weight of ["Regular", "Medium", "SemiBold", "Bold"]) {
+    has(install, `path-include=/usr/share/fonts/opentype/inter/Inter-${weight}.otf`);
   }
 });
 

@@ -24,11 +24,21 @@ To build it locally: `docker build -t beambox-desktop packages/desktop-image/ima
 
 ## What's in `image/`
 
-The Docker build context. The `Dockerfile` copies the folder and runs `install.sh`, which installs everything from
-the files beside it.
+The Docker build context. The `Dockerfile` runs `install.sh` twice, so the packages get a layer of their own:
+1. It copies `install.sh` alone and runs `install.sh packages`.
+2. It copies the folder and runs `install.sh files`.
 
-- **`install.sh`:** the packages, the files below put in place, the openbox and dock setup, dark GTK. Beambox runs
-  the same script when it builds a desktop locally.
+A change to any other file in `image/` then rebuilds, and makes Beambox pull, only the small second layer. Changing
+`install.sh` rebuilds both. `ARG VERSION` comes after both RUNs, since a changed build arg reruns every RUN after it.
+One consequence: a release that changes only files keeps the Debian packages it had last time.
+
+- **`install.sh`:** the packages, the files below put in place, the openbox and dock setup, dark GTK. With no
+  argument it does both steps; Beambox runs it that way when it builds a desktop locally.
+  - Before installing, it adds dpkg filters (`/etc/dpkg/dpkg.cfg.d/beambox-desktop`) that leave out about 105 MB
+    the desktop never uses: translations, Papirus sizes other than 16, 48 and 64 px (the dock's icons are 48 px,
+    magnified to 72), Papirus-Light, all Inter weights except Regular, Medium, SemiBold and Bold, and Chromium's
+    Vulkan validation layer.
+  - The filters stay in place, so packages an agent installs later also skip their translations.
 - **`start-desktop`:** starts the desktop in the background and returns once VNC listens on 5900. Beambox runs it
   after every boot.
 - **Xvnc:** TigerVNC's `Xvnc` is the X server and the VNC server in one. It resizes to the viewer instead of being
