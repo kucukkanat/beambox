@@ -67,7 +67,6 @@ function Sheet({ api, onCreate, onClose }: { api: Api; onCreate(opts: CreateOpts
   const plain = helper === "none";
   const needKeys = plain ? [] : (missing[helper] ?? []);
   useEffect(() => setProvider(needKeys[0] ?? ""), [needKeys[0]]);
-  const ok = plain || task.trim().length > 0;
   const chosen = SIZES[size] ?? SIZES[1];
 
   const pick = (h: Helper) => {
@@ -80,7 +79,6 @@ function Sheet({ api, onCreate, onClose }: { api: Api; onCreate(opts: CreateOpts
     if (!screen) setSize((s) => Math.max(s, ROOMY));
   };
   const build = async () => {
-    if (!ok) return;
     if (needKeys.length && key.trim()) {
       try {
         await api.setCredential(provider, key.trim());
@@ -91,7 +89,8 @@ function Sheet({ api, onCreate, onClose }: { api: Api; onCreate(opts: CreateOpts
     const opts: CreateOpts = {};
     if (!plain) {
       opts.harness = helper;
-      opts.task = task.trim();
+      // No job: the agent starts and waits in its terminal.
+      if (task.trim()) opts.task = task.trim();
     }
     if (mount) opts.mount = mount;
     opts.desktop = screen;
@@ -188,6 +187,7 @@ function Sheet({ api, onCreate, onClose }: { api: Api; onCreate(opts: CreateOpts
           <div className="step-h">
             <b>2</b>
             <h3>{plain ? "What's it for?" : "What's the job?"}</h3>
+            {!plain && <span className="mono dim">Optional</span>}
           </div>
           {plain ? (
             <p className="dim m-0">
@@ -204,7 +204,7 @@ function Sheet({ api, onCreate, onClose }: { api: Api; onCreate(opts: CreateOpts
                 rows={3}
                 value={task}
                 onChange={(e) => setTask(e.target.value)}
-                placeholder="Describe it like you would to a colleague. For example: fix the failing tests and tell me what was wrong."
+                placeholder="Describe it like you would to a colleague, or leave it empty and tell the agent in its terminal later."
               />
               <div className="chips">
                 {EXAMPLES.map((example) => (
@@ -357,7 +357,7 @@ function Sheet({ api, onCreate, onClose }: { api: Api; onCreate(opts: CreateOpts
 
         <div className="sheet-foot">
           <p>{summary}</p>
-          <Button type="submit" variant="accent" size="big" disabled={!ok}>
+          <Button type="submit" variant="accent" size="big">
             Build the box <kbd>⌘↵</kbd>
           </Button>
         </div>

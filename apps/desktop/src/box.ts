@@ -81,7 +81,7 @@ export function bootStages(opts: CreateOpts, preparing: boolean): { label: strin
     opts.mount && { label: `Moving in ${basename(opts.mount)}`, log: `${opts.mount} → /workspace` },
     opts.desktop && { label: "Switching on the screen", log: "start the desktop" },
     helper && { label: `Getting ${helper} ready`, log: `start ${opts.harness} in tmux` },
-    helper && { label: "Reading the job", log: (opts.task ?? "").slice(0, 60) },
+    helper && opts.task && { label: "Reading the job", log: (opts.task ?? "").slice(0, 60) },
   ];
   return stages.filter((s) => !!s);
 }

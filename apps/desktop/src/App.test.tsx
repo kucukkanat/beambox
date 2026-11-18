@@ -348,15 +348,26 @@ describe("new box sheet", () => {
     expect(api.create).toHaveBeenCalledWith(expect.objectContaining({ mount: "/Users/me/photos" }));
   });
 
+  it("builds an agent box without a job", async () => {
+    const api = fakeApi();
+    render(<App api={api} />);
+    const sheet = await openSheet();
+    await userEvent.click(within(sheet).getByRole("button", { name: /Build the box/ }));
+    await waitFor(() => expect(api.create).toHaveBeenCalled());
+    const opts = vi.mocked(api.create).mock.calls[0]?.[0];
+    expect(opts?.harness).toBe("claude-code");
+    expect(opts).not.toHaveProperty("task");
+  });
+
   it("sizes the box for who works in it and for the screen", async () => {
     const api = fakeApi();
     render(<App api={api} />);
     const sheet = await openSheet();
     const size = within(sheet).getByRole("slider", { name: "How big" });
     const build = within(sheet).getByRole("button", { name: /Build the box/ });
-    // An agent gets Standard, and needs a job.
+    // An agent gets Standard, and the job is optional.
     expect(size).toHaveValue("1");
-    expect(build).toBeDisabled();
+    expect(build).toBeEnabled();
     await userEvent.click(within(sheet).getByRole("radio", { name: /Just a computer/ }));
     expect(size).toHaveValue("0");
     expect(within(sheet).queryByRole("textbox", { name: "The job" })).not.toBeInTheDocument();

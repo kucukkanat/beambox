@@ -69,7 +69,7 @@ yet are not part of this spec.
        one-line explanation.
 
   "More options" holds the name, the web ports and the optional key field from today's form. A one-line summary
-  sits next to **Build the box** (`⌘↵`), which is disabled until there's a job, unless it's Just a computer.
+  sits next to **Build the box** (`⌘↵`), which is always enabled: the job is optional, and without one the agent starts and waits in its terminal.
 - **Box view** (replaces `SandboxView`):
   - Header: a back key (`Esc`), the LED, the name and a summary line.
   - The **AGENT / YOU lever**, for agent boxes. Flipping to YOU calls `setTakeover(true)`. Flipping back opens a
@@ -92,8 +92,8 @@ yet are not part of this spec.
 - [ ] The tray isn't rendered when nothing needs you.
 - [ ] The New box sheet sends `create` with `harness`, `task`, `mount`, `desktop`, `cpus`, `memoryMib`, `network`,
       `name` and `ports` mapped as specified. Choosing Heavy with the screen on gives `cpus: 4, memoryMib: 8192, desktop: true`.
-- [ ] Turning the screen on with Light selected moves the fader to Roomy. **Build the box** is disabled with an agent
-      and an empty job, and enabled for Just a computer.
+- [ ] Turning the screen on with Light selected moves the fader to Roomy. **Build the box** is enabled with or
+      without a job.
 - [ ] `N` opens the sheet (not while typing), `Esc` closes it, and `⌘↵` builds.
 - [ ] A booting card shows the stage names for its options, and "Preparing Beambox…" when `baseReady` is false.
 - [ ] Flipping the lever calls `setTakeover(name, true)`. Handing back with a note sends the note plus `\r` to
@@ -132,7 +132,7 @@ React, Tailwind v4, shadcn (`button`, `popover`, `tabs`), `motion` (`layout`, sp
   and opening a port shows it inside the screen.
 - The hold key is `HoldKey` in `src/keys.tsx` (reusable, with `Tool`, `Led` and `Icon`). The box view leaves room
   for panels below its screen (`BoxView.tsx`, marked with a comment).
-- With an agent, Build the box needs any non-empty job.
+- The job is optional (changed after testing): an agent box without one starts its harness with no first prompt.
 
 ## Out of scope
 - Detecting an agent that waits for input or has finished ("Ready to review"), Allow/Deny buttons, and the
