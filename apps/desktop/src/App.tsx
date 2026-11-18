@@ -1,140 +1,211 @@
 import { MotionConfig } from "motion/react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Toaster, toast } from "sonner";
-import type { Api, CreateOpts, Sandbox, Status } from "./api.ts";
-import { Home, type Pending } from "./Home.tsx";
+import type { AgentStatus, Api, CreateOpts, Sandbox, Status } from "./api.ts";
+import { BoxView, type Mode } from "./BoxView.tsx";
+import { boxState, needsYou } from "./box.ts";
 import { HypervisorCard } from "./HypervisorCard.tsx";
+import { showError, typing } from "./lib/utils.ts";
 import { spring, useReducedMotion } from "./motion.ts";
-import { SandboxView } from "./SandboxView.tsx";
+import { NewBoxSheet } from "./NewBoxSheet.tsx";
+import { type Pending, Shelf } from "./Shelf.tsx";
+import { sound } from "./sound.ts";
 
 export type Actions = {
-  create(opts: CreateOpts): void;
   start(name: string): void;
   stop(name: string): void;
   fork(name: string): void;
   snapshot(name: string): void;
   remove(name: string): void;
-  /** Start an agent sandbox's harness again after it stopped, and show its terminal. */
+  /** Start an agent box's harness again after it stopped. */
   restartAgent(name: string): void;
+  open(name: string, mode?: Mode): void;
+  dismissSignIn(name: string): void;
 };
 
 const UNDO_MS = 5000;
 
-const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-
-/** A loading toast with a running clock, replaced by the outcome when `call` settles. */
-function waitToast<T>(call: Promise<T>, loading: string, success: (value: T) => string, error: string) {
-  const started = Date.now();
-  const id = toast.loading(`${loading} · ${clock(0)}`);
-  const tick = setInterval(() => {
-    toast.loading(`${loading} · ${clock(Math.floor((Date.now() - started) / 1000))}`, { id });
-  }, 1000);
-  void call
-    .then(
-      (value) => void toast.success(success(value), { id }),
-      () => void toast.error(error, { id }),
-    )
-    .finally(() => clearInterval(tick));
+/** What each running agent box's harness is doing, checked every 3 s. */
+function useAgents(api: Api, sandboxes: Sandbox[]) {
+  const [agents, setAgents] = useState<Record<string, AgentStatus>>({});
+  const watched = sandboxes
+    .filter((s) => s.harness && s.status === "running")
+    .map((s) => s.name)
+    .join("\n");
+  useEffect(() => {
+    if (!watched) return;
+    let current = true;
+    const poll = () => {
+      for (const name of watched.split("\n"))
+        void api.agentStatus(name).then(
+          (status) =>
+            current && setAgents((all) => (all[name] === status ? all : { ...all, [name]: status })),
+          () => {},
+        );
+    };
+    poll();
+    const timer = setInterval(poll, 3000);
+    return () => {
+      current = false;
+      clearInterval(timer);
+    };
+  }, [api, watched]);
+  const setAgent = useCallback(
+    (name: string, status: AgentStatus) => setAgents((all) => ({ ...all, [name]: status })),
+    [],
+  );
+  const forget = useCallback((name: string) => setAgents(({ [name]: _, ...rest }) => rest), []);
+  return [agents, setAgent, forget] as const;
 }
-const showError = (error: unknown) => void toast.error(String(error));
+
+/** Type a line into the agent's tmux session, once tmux has attached (its first redraw). */
+async function typeNote(api: Api, name: string, note: string) {
+  let attached = () => {};
+  const ready = new Promise<void>((resolve) => (attached = resolve));
+  const id = await api.terminalOpen(name, () => attached());
+  try {
+    await Promise.race([ready, new Promise((resolve) => setTimeout(resolve, 2000))]);
+    // One line: a newline would send the note in pieces.
+    await api.terminalInput(id, `${note.replace(/\s*\n\s*/g, " ")}\r`);
+  } finally {
+    await api.terminalClose(id);
+  }
+}
 
 export function App({ api }: { api: Api }) {
   const reduced = useReducedMotion();
   const [sandboxes, setSandboxes] = useState<Sandbox[]>([]);
   const [deleting, setDeleting] = useState<string[]>([]);
-  // Creates still booting: a card for each until its sandbox shows up in the list.
+  // Creates still booting: a card for each until its box shows up in the list.
   const [pending, setPending] = useState<Pending[]>([]);
-  // `n` remounts the view, so a repeated `beambox desktop` request switches back to the Desktop tab.
-  const [opened, setOpened] = useState<{ name: string; tab: string; n: number } | null>(null);
-  const openSandbox = useCallback(
-    (name: string, tab = "terminal") => setOpened((o) => ({ name, tab, n: (o?.n ?? 0) + 1 })),
+  // Boxes made by this window without a usable key, until you open their terminal or dismiss them.
+  const [signIn, setSignIn] = useState<string[]>([]);
+  // Jobs of boxes made by this window: the backend doesn't keep them.
+  const [tasks, setTasks] = useState<Record<string, string>>({});
+  const [sheet, setSheet] = useState(false);
+  // `n` remounts the view, so a repeated `beambox desktop` request switches back to the Screen.
+  const [opened, setOpened] = useState<{ name: string; mode: Mode | undefined; n: number } | null>(null);
+  const [agents, setAgent, forgetAgent] = useAgents(api, sandboxes);
+  const open = useCallback(
+    (name: string, mode?: Mode) => setOpened((o) => ({ name, mode, n: (o?.n ?? 0) + 1 })),
     [],
   );
 
-  // Polling also picks up sandboxes created from the command line.
+  // Polling also picks up boxes created from the command line.
   const refresh = useCallback(() => api.list().then(setSandboxes, () => {}), [api]);
   useEffect(() => {
     void refresh();
     const timer = setInterval(refresh, 2000);
     return () => clearInterval(timer);
   }, [refresh]);
-  // `beambox desktop <name>` opens a sandbox's desktop, at launch or in the running window.
+  // `beambox desktop <name>` opens a box's screen, at launch or in the running window.
   useEffect(() => {
     void api.takeOpen().then(
-      (name) => name && openSandbox(name, "desktop"),
+      (name) => name && open(name, "screen"),
       () => {},
     );
-    return api.onOpen((name) => openSandbox(name, "desktop"));
-  }, [api, openSandbox]);
+    return api.onOpen((name) => open(name, "screen"));
+  }, [api, open]);
+  const viewing = !!opened && sandboxes.some((s) => s.name === opened.name);
+  // N opens the New box sheet, unless you're typing.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== "n" || event.metaKey || event.ctrlKey || event.altKey) return;
+      if (typing(event.target) || viewing || sheet) return;
+      event.preventDefault();
+      setSheet(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [viewing, sheet]);
+
+  const shown = sandboxes.filter((s) => !deleting.includes(s.name));
+  const boxes = shown.map((s) => ({
+    sandbox: s,
+    state: boxState(s, agents[s.name], signIn.includes(s.name)),
+  }));
+
+  // A double beep when a box starts needing you.
+  const waiting = boxes.filter((b) => needsYou(b.state)).map((b) => b.sandbox.name);
+  const seen = useRef<string[]>([]);
+  useEffect(() => {
+    if (waiting.some((name) => !seen.current.includes(name))) sound.needsYou();
+    seen.current = waiting;
+  });
 
   const run = (call: Promise<unknown>) => void call.then(refresh, showError);
   const setStatus = (name: string, status: Status) =>
     setSandboxes((all) => all.map((s) => (s.name === name ? { ...s, status } : s)));
   const undelete = (name: string) => setDeleting((all) => all.filter((n) => n !== name));
+  const dropSignIn = useCallback(
+    (name: string) => setSignIn((all) => (all.includes(name) ? all.filter((n) => n !== name) : all)),
+    [],
+  );
+
+  const create = (opts: CreateOpts) => {
+    const call = api.create(opts);
+    const id = Date.now() + Math.random();
+    setPending((all) => [...all, { id, opts, preparing: false }]);
+    // Until the base snapshot is built (the app builds it at startup), a create waits minutes for it.
+    void api.baseReady().then(
+      (ready) => !ready && setPending((all) => all.map((p) => (p.id === id ? { ...p, preparing: true } : p))),
+      () => {},
+    );
+    void call
+      .then(async (s) => {
+        sound.ready();
+        if (opts.task) setTasks((all) => ({ ...all, [s.name]: opts.task as string }));
+        // Without a usable stored key the agent asks you to sign in, in its terminal.
+        if (opts.harness && (await api.missingCredentials(opts.harness)).length > 0)
+          setSignIn((all) => [...all, s.name]);
+        toast.success(`${s.name} is ready`);
+        await refresh();
+      })
+      .catch(showError)
+      .finally(() => setPending((all) => all.filter((p) => p.id !== id)));
+  };
 
   const actions: Actions = {
-    create: (opts) => {
-      const call = api.create(opts);
-      const id = Date.now() + Math.random();
-      const kind = [opts.harness, opts.desktop && "desktop"].filter(Boolean).join(" with a ") || "sandbox";
-      setPending((all) => [...all, { id, label: opts.name ? `${opts.name} · ${kind}` : kind }]);
-      void call.then(refresh, () => {}).finally(() => setPending((all) => all.filter((p) => p.id !== id)));
-      // Every sandbox boots from one base snapshot in about a second. Until it's built (the app builds it at
-      // startup), a create waits for it: the toast says so and counts the seconds, so it doesn't look stuck.
-      const harness = opts.harness;
-      // Without a usable stored key the agent asks you to sign in, so show its terminal straight away.
-      const signIn = harness
-        ? call.then(async (s) => ({ s, signIn: (await api.missingCredentials(harness)).length > 0 }))
-        : null;
-      void signIn?.then(
-        ({ s, signIn }) => signIn && openSandbox(s.name, "terminal"),
-        () => {},
-      );
-      void api.baseReady().then((ready) => {
-        if (ready && !harness && !opts.desktop) return;
-        const what = harness ? kind : opts.desktop ? "the desktop" : "the sandbox";
-        const loading = ready
-          ? `Starting ${what}…`
-          : `Starting ${what}… preparing Beambox first, which takes a few minutes, once`;
-        if (harness && signIn)
-          waitToast(
-            signIn,
-            loading,
-            ({ s, signIn }) =>
-              signIn ? `Sign in to ${harness} in ${s.name}'s terminal` : `${s.name} is ready`,
-            `Couldn't start ${harness}`,
-          );
-        else waitToast(call, loading, (s) => `${s.name} is ready`, `Couldn't start ${what}`);
-      });
-      run(call);
-    },
+    open,
+    dismissSignIn: dropSignIn,
     start: (name) => {
+      sound.wake();
       setStatus(name, "booting");
       run(api.start(name));
     },
     stop: (name) => {
+      sound.sleep();
+      sound.shutter();
       setStatus(name, "stopped");
       run(api.stop(name));
     },
     fork: (name) => run(api.fork(name)),
     restartAgent: (name) => {
       void api.restartAgent(name).then(() => {
-        toast.success(`Restarted the agent in ${name}`);
-        openSandbox(name, "terminal");
+        setAgent(name, "running");
+        toast.success(`Started the agent in ${name} again`);
       }, showError);
     },
-    snapshot: (name) => void api.snapshot(name).then((s) => toast.success(`Saved snapshot ${s}`), showError),
+    snapshot: (name) => void api.snapshot(name).then((s) => toast.success(`Made save point ${s}`), showError),
     remove: (name) => {
+      sound.trash();
       setDeleting((all) => [...all, name]);
+      setOpened((o) => (o?.name === name ? null : o));
       const timer = setTimeout(
         () =>
           void api
             .delete(name)
-            .then(refresh, showError)
+            .then(() => {
+              // Names come back after a delete (sandbox-1…): a new box mustn't inherit this one's state.
+              dropSignIn(name);
+              setTasks(({ [name]: _, ...rest }) => rest);
+              forgetAgent(name);
+              return refresh();
+            }, showError)
             .finally(() => undelete(name)),
         UNDO_MS,
       );
-      toast(`Deleted ${name}`, {
+      toast(`Threw away ${name}`, {
         duration: UNDO_MS,
         action: {
           label: "Undo",
@@ -147,34 +218,51 @@ export function App({ api }: { api: Api }) {
     },
   };
 
-  const open = sandboxes.find((s) => s.name === opened?.name);
+  const takeover = async (name: string, on: boolean, note = "") => {
+    sound.clunk();
+    try {
+      await api.setTakeover(name, on);
+      setAgent(name, on ? "frozen" : "running");
+      // Typed into the agent's own session once it runs again, so it knows what you changed.
+      if (note) await typeNote(api, name, note);
+    } catch (error) {
+      showError(error);
+    }
+  };
+
+  const box = opened && boxes.find((b) => b.sandbox.name === opened.name);
   return (
     <MotionConfig
       reducedMotion={reduced ? "always" : "never"}
       transition={reduced ? { duration: 0 } : spring}
     >
-      <main className="flex h-screen flex-col gap-4 p-6">
+      <main className="mx-auto flex min-h-screen max-w-[1320px] flex-col gap-[22px] px-4 pt-5 pb-16">
         <HypervisorCard api={api} />
-        {open && opened ? (
-          <SandboxView
+        {box ? (
+          <BoxView
             key={opened.n}
-            initialTab={opened.tab}
             api={api}
-            sandbox={open}
-            onRestartAgent={() => actions.restartAgent(open.name)}
+            sandbox={box.sandbox}
+            state={box.state}
+            initialMode={opened.mode}
+            actions={actions}
+            onTakeover={(on, note) => void takeover(box.sandbox.name, on, note)}
+            onTerminal={() => dropSignIn(box.sandbox.name)}
             onBack={() => setOpened(null)}
           />
         ) : (
-          <Home
+          <Shelf
             api={api}
-            sandboxes={sandboxes.filter((s) => !deleting.includes(s.name))}
+            boxes={boxes}
             pending={pending}
+            tasks={tasks}
             actions={actions}
-            onOpen={openSandbox}
+            onNew={() => setSheet(true)}
           />
         )}
       </main>
-      <Toaster position="bottom-right" theme="system" />
+      <NewBoxSheet api={api} open={sheet} onOpenChange={setSheet} onCreate={create} />
+      <Toaster position="bottom-center" theme="system" />
     </MotionConfig>
   );
 }

@@ -1,8 +1,8 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App.tsx";
-import type { Api, Hypervisor, Sandbox } from "./api.ts";
+import type { AgentStatus, Api, Hypervisor, Sandbox } from "./api.ts";
 
 // xterm and noVNC need a real canvas; their wiring is covered by the Rust tests and the manual smoke test.
 vi.mock("./Terminal.tsx", () => ({ Terminal: () => null }));
@@ -13,13 +13,17 @@ const sandbox = (over: Partial<Sandbox> = {}): Sandbox => ({
   template: "base",
   status: "running",
   cpus: 1,
-  memoryMib: 256,
+  memoryMib: 1024,
   harness: null,
   ports: [],
   ...over,
 });
 
-function fakeApi(sandboxes: Sandbox[] = [], hypervisor: Hypervisor = { state: "ok", os: "macos" }): Api {
+function fakeApi(
+  sandboxes: Sandbox[] = [],
+  agents: Record<string, AgentStatus> = {},
+  hypervisor: Hypervisor = { state: "ok", os: "macos" },
+): Api {
   return {
     list: vi.fn(async () => sandboxes),
     create: vi.fn(async () => sandbox({ name: "sandbox-1" })),
@@ -35,10 +39,11 @@ function fakeApi(sandboxes: Sandbox[] = [], hypervisor: Hypervisor = { state: "o
     metrics: vi.fn(async () => ({ cpuPercent: 0, memoryBytes: 0 })),
     takeover: vi.fn(async () => false),
     setTakeover: vi.fn(async () => {}),
-    agentStatus: vi.fn(async () => "running" as const),
+    agentStatus: vi.fn(async (name: string) => agents[name] ?? "running"),
     baseReady: vi.fn(async () => true),
     restartAgent: vi.fn(async () => {}),
     pickFolder: vi.fn(async () => "/Users/me/project"),
+    onFolderDrop: vi.fn(() => () => {}),
     credentials: vi.fn(async () => ["openai"]),
     setCredential: vi.fn(async () => {}),
     removeCredential: vi.fn(async () => {}),
@@ -71,202 +76,202 @@ function prefersReducedMotion(reduce: boolean) {
   }));
 }
 
-beforeEach(() => prefersReducedMotion(false));
+// Reduced motion: cards come and go at once instead of after animations jsdom can't run.
+beforeEach(() => {
+  prefersReducedMotion(true);
+  localStorage.clear();
+});
 afterEach(() => vi.useRealTimers());
 
-describe("home", () => {
-  it("one click on New sandbox calls the backend once with defaults", async () => {
-    const api = fakeApi();
-    render(<App api={api} />);
-    await userEvent.click(await screen.findByRole("button", { name: "New sandbox" }));
-    expect(api.create).toHaveBeenCalledTimes(1);
-    expect(api.create).toHaveBeenCalledWith({});
-  });
+const shelf = () => screen.getByRole("region", { name: "Shelf" });
+const tray = () => screen.queryByRole("region", { name: "Waiting for you" });
+const card = (name: string) => screen.findByRole("article", { name });
 
-  it("says a Desktop sandbox is starting until it is ready", async () => {
-    const api = fakeApi();
-    let finish = (_: Sandbox) => {};
-    api.create = vi.fn(() => new Promise<Sandbox>((resolve) => (finish = resolve)));
-    render(<App api={api} />);
-    await userEvent.click(await screen.findByRole("button", { name: "Sandbox options" }));
-    await userEvent.click(screen.getByRole("switch", { name: "Desktop" }));
-    await userEvent.click(screen.getByRole("button", { name: "Create" }));
-    expect(api.create).toHaveBeenCalledWith({ desktop: true, network: "public" });
-    expect(await screen.findByText(/Starting the desktop/)).toBeInTheDocument();
-    await act(async () => finish(sandbox({ name: "sandbox-1", template: "desktop" })));
-    expect(await screen.findByText("sandbox-1 is ready")).toBeInTheDocument();
-  });
+async function openSheet(user = userEvent.setup()) {
+  await user.click(await screen.findByRole("button", { name: "New box" }));
+  return screen.findByRole("dialog", { name: "New box" });
+}
 
-  it("says nothing about a wait once the base snapshot is built", async () => {
-    const api = fakeApi();
-    let finish = (_: Sandbox) => {};
-    api.create = vi.fn(() => new Promise<Sandbox>((resolve) => (finish = resolve)));
-    render(<App api={api} />);
-    await userEvent.click(await screen.findByRole("button", { name: "Sandbox options" }));
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Harness" }), "opencode");
-    await userEvent.click(screen.getByRole("button", { name: "Create" }));
-    expect(await screen.findByText(/Starting opencode… · 0:0/)).toBeInTheDocument();
-    expect(screen.queryByText(/preparing Beambox/)).not.toBeInTheDocument();
-    await act(async () => finish(sandbox({ name: "op-3", harness: "opencode" })));
-    expect(await screen.findByText("op-3 is ready")).toBeInTheDocument();
-  });
-
-  it("creates an agent sandbox with a harness, a task and a desktop", async () => {
-    const api = fakeApi();
-    render(<App api={api} />);
-    await userEvent.click(await screen.findByRole("button", { name: "Sandbox options" }));
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Harness" }), "claude-code");
-    await userEvent.type(screen.getByRole("textbox", { name: "Task" }), "fix the tests");
-    await userEvent.click(screen.getByRole("switch", { name: "Desktop" }));
-    await userEvent.click(screen.getByRole("button", { name: "Create" }));
-    expect(api.create).toHaveBeenCalledExactlyOnceWith({
-      harness: "claude-code",
-      task: "fix the tests",
-      desktop: true,
-      network: "public",
-    });
-  });
-
-  it("shows a booting card while a create runs, and drops it when the sandbox is there", async () => {
-    const api = fakeApi();
-    let finish = (_: Sandbox) => {};
-    api.create = vi.fn(() => new Promise<Sandbox>((resolve) => (finish = resolve)));
-    render(<App api={api} />);
-    await userEvent.click(await screen.findByRole("button", { name: "New sandbox" }));
-    const card = await screen.findByRole("article", { name: "New sandbox, starting" });
-    expect(within(card).getByLabelText("booting")).toBeInTheDocument();
-    await act(async () => finish(sandbox({ name: "sandbox-1" })));
-    await waitFor(() =>
-      expect(screen.queryByRole("article", { name: "New sandbox, starting" })).not.toBeInTheDocument(),
+describe("shelf", () => {
+  it("sorts boxes by state, each with its state word", async () => {
+    const api = fakeApi(
+      [
+        sandbox({ name: "asleep", status: "stopped" }),
+        sandbox({ name: "ready" }),
+        sandbox({ name: "driving", harness: "codex" }),
+        sandbox({ name: "working", harness: "codex" }),
+        sandbox({ name: "booting", status: "booting" }),
+        sandbox({ name: "signin", harness: "claude-code" }),
+        sandbox({ name: "crashed", status: "crashed" }),
+        sandbox({ name: "stopped", harness: "codex" }),
+      ],
+      { driving: "frozen", stopped: "exited" },
     );
+    // "signin" is made by this window without a stored key.
+    api.create = vi.fn(async () => sandbox({ name: "signin", harness: "claude-code" }));
+    api.missingCredentials = vi.fn(async () => ["anthropic"]);
+    render(<App api={api} />);
+    const sheet = await openSheet();
+    await userEvent.type(within(sheet).getByRole("textbox", { name: "The job" }), "fix it");
+    await userEvent.click(within(sheet).getByRole("button", { name: /Build the box/ }));
+    const expected = [
+      ["stopped", "Agent stopped"],
+      ["crashed", "Crashed"],
+      ["signin", "Sign in"],
+      ["booting", "Getting ready"],
+      ["working", "Working"],
+      ["driving", "You're driving"],
+      ["ready", "Ready for you"],
+      ["asleep", "Asleep"],
+    ];
+    await waitFor(() =>
+      expect(
+        within(shelf())
+          .getAllByRole("article")
+          .map((a) => a.getAttribute("aria-label")),
+      ).toEqual(expected.map(([name]) => name)),
+    );
+    for (const [name, word] of expected) {
+      expect(within(await card(name as string)).getByText(word as string)).toBeInTheDocument();
+    }
   });
 
-  it("creates with a name, vCPUs, memory and a folder picked in the system dialog", async () => {
-    const api = fakeApi();
+  it("restarts a stopped agent from the tray", async () => {
+    const api = fakeApi([sandbox({ harness: "codex" })], { a: "exited" });
     render(<App api={api} />);
-    await userEvent.click(await screen.findByRole("button", { name: "Sandbox options" }));
-    await userEvent.type(screen.getByRole("textbox", { name: "Name" }), "web");
-    // The empty fields show the defaults you'd get.
-    expect(screen.getByRole("spinbutton", { name: "vCPUs" })).toHaveAttribute("placeholder", "1");
-    await userEvent.click(screen.getByRole("switch", { name: "Desktop" }));
-    expect(screen.getByRole("spinbutton", { name: "Memory (MiB)" })).toHaveAttribute("placeholder", "4096");
-    await userEvent.type(screen.getByRole("spinbutton", { name: "vCPUs" }), "4");
-    await userEvent.type(screen.getByRole("spinbutton", { name: "Memory (MiB)" }), "8192");
-    await userEvent.click(screen.getByRole("button", { name: "Browse…" }));
-    expect(await screen.findByDisplayValue("/Users/me/project")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Create" }));
-    expect(api.create).toHaveBeenCalledExactlyOnceWith({
-      name: "web",
-      cpus: 4,
-      memoryMib: 8192,
-      desktop: true,
-      mount: "/Users/me/project",
-      network: "public",
-    });
-  });
-
-  it("says when an agent has stopped and restarts it into its terminal", async () => {
-    const api = fakeApi([sandbox({ harness: "codex" })]);
-    api.agentStatus = vi.fn(async () => "exited" as const);
-    render(<App api={api} />);
-    const card = await screen.findByRole("article", { name: "a" });
-    expect(await within(card).findByText("Agent stopped")).toBeInTheDocument();
-    // Amber, not the green of a healthy sandbox.
-    expect(within(card).getByLabelText("running, agent stopped")).toHaveClass("bg-amber-500");
-    await userEvent.click(within(card).getByRole("button", { name: "Restart agent" }));
+    const waiting = await screen.findByRole("region", { name: "Waiting for you" });
+    await userEvent.click(await within(waiting).findByRole("button", { name: "Start agent again" }));
     expect(api.restartAgent).toHaveBeenCalledExactlyOnceWith("a");
-    expect(await screen.findByRole("tab", { name: "Terminal", selected: true })).toBeInTheDocument();
   });
 
-  it("labels the CPU and memory lines", async () => {
+  it("wakes a crashed box from the tray", async () => {
+    const api = fakeApi([sandbox({ status: "crashed" })]);
+    render(<App api={api} />);
+    const waiting = await screen.findByRole("region", { name: "Waiting for you" });
+    await userEvent.click(within(waiting).getByRole("button", { name: "Wake" }));
+    expect(api.start).toHaveBeenCalledExactlyOnceWith("a");
+  });
+
+  async function signInBox() {
+    const api = fakeApi([sandbox({ name: "sandbox-1", harness: "claude-code" })]);
+    api.create = vi.fn(async () => sandbox({ name: "sandbox-1", harness: "claude-code" }));
+    api.missingCredentials = vi.fn(async () => ["anthropic"]);
+    render(<App api={api} />);
+    const sheet = await openSheet();
+    await userEvent.type(within(sheet).getByRole("textbox", { name: "The job" }), "fix it");
+    await userEvent.click(within(sheet).getByRole("button", { name: /Build the box/ }));
+    return screen.findByRole("region", { name: "Waiting for you" });
+  }
+
+  it("drops a sign-in item once its terminal opens", async () => {
+    const waiting = await signInBox();
+    await userEvent.click(within(waiting).getByRole("button", { name: "Open terminal" }));
+    expect(await screen.findByRole("button", { name: "Terminal", pressed: true })).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    await screen.findByRole("region", { name: "Shelf" });
+    expect(tray()).not.toBeInTheDocument();
+  });
+
+  it("drops a sign-in item on ✕", async () => {
+    const waiting = await signInBox();
+    await userEvent.click(within(waiting).getByRole("button", { name: "Dismiss" }));
+    expect(tray()).not.toBeInTheDocument();
+  });
+
+  it("has no tray when nothing needs you", async () => {
+    render(<App api={fakeApi([sandbox(), sandbox({ name: "b", harness: "codex" })])} />);
+    await card("b");
+    await act(() => Promise.resolve());
+    expect(tray()).not.toBeInTheDocument();
+  });
+
+  it("shows the last lines of the logs as plain text on the box's screen", async () => {
+    const api = fakeApi([sandbox()]);
+    api.logs = vi.fn(async () => ["\x1b[34mhello\x1b[m\x1b[K\r\n", "world\n"]);
+    render(<App api={api} />);
+    const box = await card("a");
+    await waitFor(() => expect(box.querySelector("pre")?.textContent).toBe("hello\nworld"));
+  });
+
+  it("Sleep calls stop, Wake calls start, and an asleep box shows its shutter", async () => {
+    const api = fakeApi([sandbox(), sandbox({ name: "b", status: "stopped" })]);
+    render(<App api={api} />);
+    const b = await card("b");
+    expect(within(b).getByLabelText("Asleep")).toBeInTheDocument();
+    await userEvent.click(within(b).getByRole("button", { name: "Wake" }));
+    expect(api.start).toHaveBeenCalledExactlyOnceWith("b");
+    await userEvent.click(within(await card("a")).getByRole("button", { name: "Sleep" }));
+    expect(api.stop).toHaveBeenCalledExactlyOnceWith("a");
+  });
+
+  it("forks with Try another way and makes a save point", async () => {
     const api = fakeApi([sandbox()]);
     render(<App api={api} />);
-    const card = await screen.findByRole("article", { name: "a" });
-    expect(card).toHaveTextContent(/CPU –\s*● Memory –/);
+    const a = await card("a");
+    await userEvent.click(within(a).getByRole("button", { name: "Try another way" }));
+    expect(api.fork).toHaveBeenCalledExactlyOnceWith("a");
+    await userEvent.click(within(a).getByRole("button", { name: "Save point" }));
+    expect(await screen.findByText("Made save point a-1")).toBeInTheDocument();
   });
 
-  it("counts the seconds while the base snapshot is built, so it doesn't look stuck", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    const api = fakeApi();
-    api.baseReady = vi.fn(async () => false);
-    let finish = (_: Sandbox) => {};
-    api.create = vi.fn(() => new Promise<Sandbox>((resolve) => (finish = resolve)));
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    render(<App api={api} />);
-    await user.click(await screen.findByRole("button", { name: "Sandbox options" }));
-    await user.selectOptions(screen.getByRole("combobox", { name: "Harness" }), "codex");
-    await user.click(screen.getByRole("switch", { name: "Desktop" }));
-    await user.click(screen.getByRole("button", { name: "Create" }));
-    await act(() => vi.advanceTimersByTimeAsync(65_000));
+  it("has no animations with reduced motion", async () => {
+    render(<App api={fakeApi([sandbox({ status: "booting" })])} />);
+    const box = await card("a");
+    expect(box.style.opacity).toBe("");
+    expect(box.style.transform).toBe("");
+  });
+});
+
+describe("header", () => {
+  it("counts boxes, working boxes and boxes waiting for you", async () => {
+    render(
+      <App
+        api={fakeApi([
+          sandbox(),
+          sandbox({ name: "w", harness: "codex" }),
+          sandbox({ name: "c", status: "crashed" }),
+        ])}
+      />,
+    );
     expect(
-      await screen.findByText(
-        /Starting codex with a desktop… preparing Beambox first, which takes a few minutes, once · 1:0[5-9]/,
-      ),
+      await screen.findByRole("status", { name: "3 boxes, 1 working, 1 waiting for you" }),
     ).toBeInTheDocument();
-    await act(async () => finish(sandbox({ name: "sandbox-7", harness: "codex" })));
-    expect(await screen.findByText("sandbox-7 is ready")).toBeInTheDocument();
   });
 
-  it("offers a missing key in the form, stores it, then creates", async () => {
-    const api = fakeApi();
-    api.missingCredentials = vi.fn(async () => ["anthropic", "openai"]);
-    render(<App api={api} />);
-    await userEvent.click(await screen.findByRole("button", { name: "Sandbox options" }));
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Harness" }), "opencode");
-    expect(api.missingCredentials).toHaveBeenLastCalledWith("opencode");
-    // Either key works for OpenCode: pick OpenAI.
-    await userEvent.selectOptions(await screen.findByRole("combobox", { name: "Key provider" }), "openai");
-    await userEvent.type(screen.getByLabelText("OpenAI key"), "sk-proj-x");
-    await userEvent.click(screen.getByRole("button", { name: "Create" }));
-    expect(api.setCredential).toHaveBeenCalledExactlyOnceWith("openai", "sk-proj-x");
-    expect(api.create).toHaveBeenCalledExactlyOnceWith({ harness: "opencode", network: "public" });
-    const stored = vi.mocked(api.setCredential).mock.invocationCallOrder[0] ?? 0;
-    expect(stored).toBeLessThan(vi.mocked(api.create).mock.invocationCallOrder[0] ?? 0);
+  it("toggles sound and keeps the choice", async () => {
+    // No AudioContext in jsdom: rendering and pressing keys must not throw.
+    expect(window.AudioContext).toBeUndefined();
+    const { unmount } = render(<App api={fakeApi()} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Turn sounds off" }));
+    expect(localStorage.getItem("beambox.muted")).toBe("1");
+    expect(screen.getByRole("button", { name: "Turn sounds on" })).toHaveAttribute("aria-pressed", "true");
+    unmount();
+    render(<App api={fakeApi()} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Turn sounds on" }));
+    expect(localStorage.getItem("beambox.muted")).toBe("0");
   });
 
-  it("creates without a key and opens the agent's terminal to sign in there", async () => {
-    const api = fakeApi([sandbox({ name: "sandbox-1", harness: "claude-code" })]);
-    api.missingCredentials = vi.fn(async () => ["anthropic"]);
-    render(<App api={api} />);
-    await userEvent.click(await screen.findByRole("button", { name: "Sandbox options" }));
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Harness" }), "claude-code");
-    await screen.findByLabelText("Anthropic key");
-    await userEvent.click(screen.getByRole("button", { name: "Create" }));
-    expect(api.setCredential).not.toHaveBeenCalled();
-    expect(api.create).toHaveBeenCalledExactlyOnceWith({ harness: "claude-code", network: "public" });
-    expect(await screen.findByText("Sign in to claude-code in sandbox-1's terminal")).toBeInTheDocument();
-    expect(await screen.findByRole("tab", { name: "Terminal", selected: true })).toBeInTheDocument();
-  });
-
-  it("doesn't create when storing the key fails", async () => {
-    const api = fakeApi();
-    api.missingCredentials = vi.fn(async () => ["anthropic"]);
-    api.setCredential = vi.fn(async () => {
-      throw new Error("keychain locked");
-    });
-    render(<App api={api} />);
-    await userEvent.click(await screen.findByRole("button", { name: "Sandbox options" }));
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Harness" }), "claude-code");
-    await userEvent.type(await screen.findByLabelText("Anthropic key"), "sk-ant-x");
-    await userEvent.click(screen.getByRole("button", { name: "Create" }));
-    expect(await screen.findByText(/keychain locked/)).toBeInTheDocument();
-    expect(api.create).not.toHaveBeenCalled();
-  });
-
-  it("has no Connect an agent popover; Install the beambox command is in the header", async () => {
+  it("installs the beambox command from the ⋯ menu", async () => {
     const api = fakeApi();
     render(<App api={api} />);
+    await userEvent.click(await screen.findByRole("button", { name: "More" }));
     await userEvent.click(await screen.findByRole("button", { name: "Install the beambox command" }));
-    expect(screen.queryByRole("button", { name: "Connect an agent" })).not.toBeInTheDocument();
     expect(api.installCli).toHaveBeenCalledOnce();
     expect(await screen.findByText(/beambox --help/, { selector: "[data-title]" })).toBeInTheDocument();
   });
 
-  it("stores and removes credentials under Settings, showing names only", async () => {
+  it("lists the licences in the ⋯ menu", async () => {
+    render(<App api={fakeApi()} />);
+    await userEvent.click(await screen.findByRole("button", { name: "More" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Licences" }));
+    expect(await screen.findByText(/LGPL-2.1/)).toBeInTheDocument();
+  });
+
+  it("stores and removes credentials under ⋯ → Settings, showing names only", async () => {
     const api = fakeApi();
     render(<App api={api} />);
+    await userEvent.click(await screen.findByRole("button", { name: "More" }));
     await userEvent.click(await screen.findByRole("button", { name: "Settings" }));
-    // In words, not the keychain's names: "OpenAI key · Stored".
     const openai = (await screen.findByText("OpenAI key")).parentElement as HTMLElement;
     expect(await within(openai).findByText("Stored")).toBeInTheDocument();
     const anthropic = screen.getByText("Anthropic key").parentElement as HTMLElement;
@@ -274,113 +279,340 @@ describe("home", () => {
     const key = screen.getByLabelText("anthropic key or token");
     expect(key).toHaveAttribute("type", "password");
     await userEvent.type(key, "sk-ant-api03-x");
+    // Typing N in a field doesn't open the New box sheet.
+    await userEvent.type(key, "n");
+    expect(screen.queryByRole("dialog", { name: "New box" })).not.toBeInTheDocument();
+    await userEvent.clear(key);
+    await userEvent.type(key, "sk-ant-api03-x");
     await userEvent.click(screen.getByRole("button", { name: "Save anthropic" }));
     expect(api.setCredential).toHaveBeenCalledWith("anthropic", "sk-ant-api03-x");
     expect(key).toHaveValue("");
     await userEvent.click(screen.getByRole("button", { name: "Remove openai" }));
     expect(api.removeCredential).toHaveBeenCalledWith("openai");
   });
+});
 
-  describe("delete", () => {
-    // Reduced motion: cards leave at once instead of after an exit animation jsdom can't run.
-    beforeEach(() => {
-      prefersReducedMotion(true);
-      vi.useFakeTimers({ shouldAdvanceTime: true });
-    });
-    const user = () => userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-
-    it("shows an undo toast and does not delete when undo is clicked within 5 s", async () => {
-      const api = fakeApi([sandbox()]);
-      render(<App api={api} />);
-      await user().click(await screen.findByRole("button", { name: "Delete a" }));
-      expect(await screen.findByText("Deleted a")).toBeInTheDocument();
-      expect(screen.queryByRole("heading", { name: "a" })).not.toBeInTheDocument();
-      await act(() => vi.advanceTimersByTimeAsync(4000));
-      await user().click(await screen.findByRole("button", { name: "Undo" }));
-      await act(() => vi.advanceTimersByTimeAsync(5000));
-      expect(api.delete).not.toHaveBeenCalled();
-      expect(await screen.findByRole("heading", { name: "a" })).toBeInTheDocument();
-    });
-
-    it("deletes after 5 s without undo", async () => {
-      // A different name: sonner's toast store outlives each render.
-      const api = fakeApi([sandbox({ name: "b" })]);
-      render(<App api={api} />);
-      await user().click(await screen.findByRole("button", { name: "Delete b" }));
-      expect(await screen.findByText("Deleted b")).toBeInTheDocument();
-      await act(() => vi.advanceTimersByTimeAsync(4900));
-      expect(api.delete).not.toHaveBeenCalled();
-      await act(() => vi.advanceTimersByTimeAsync(200));
-      expect(api.delete).toHaveBeenCalledExactlyOnceWith("b");
+describe("new box sheet", () => {
+  it("sends every option to create, mapped from the sheet", async () => {
+    const api = fakeApi();
+    render(<App api={api} />);
+    const sheet = await openSheet();
+    await userEvent.click(within(sheet).getByRole("radio", { name: /Codex CLI/ }));
+    await userEvent.type(within(sheet).getByRole("textbox", { name: "The job" }), "fix it");
+    await userEvent.click(within(sheet).getByRole("button", { name: /choose a folder/ }));
+    expect(await within(sheet).findByText("/Users/me/project")).toBeInTheDocument();
+    await userEvent.click(within(sheet).getByRole("switch", { name: "A screen" }));
+    fireEvent.change(within(sheet).getByRole("slider", { name: "How big" }), { target: { value: "3" } });
+    await userEvent.click(within(sheet).getByRole("button", { name: "Offline" }));
+    await userEvent.click(within(sheet).getByText("More options"));
+    await userEvent.type(within(sheet).getByRole("textbox", { name: "Name" }), "web");
+    await userEvent.type(within(sheet).getByRole("textbox", { name: /Web ports/ }), "3000, 8080");
+    await userEvent.click(within(sheet).getByRole("button", { name: /Build the box/ }));
+    expect(api.create).toHaveBeenCalledExactlyOnceWith({
+      harness: "codex",
+      task: "fix it",
+      mount: "/Users/me/project",
+      desktop: true,
+      cpus: 4,
+      memoryMib: 8192,
+      network: "none",
+      name: "web",
+      ports: [3000, 8080],
     });
   });
 
-  it("animates cards and pulses the booting dot normally", async () => {
-    render(<App api={fakeApi([sandbox({ status: "booting" })])} />);
-    expect(await screen.findByLabelText("booting")).toHaveClass("animate-pulse");
+  it("takes a folder dropped on the window", async () => {
+    const api = fakeApi();
+    let drop = (_: string) => {};
+    api.onFolderDrop = (handler) => {
+      drop = handler;
+      return () => {};
+    };
+    render(<App api={api} />);
+    const sheet = await openSheet();
+    await userEvent.click(within(sheet).getByRole("radio", { name: /Just a computer/ }));
+    act(() => drop("/Users/me/photos"));
+    await userEvent.click(within(sheet).getByRole("button", { name: /Build the box/ }));
+    expect(api.create).toHaveBeenCalledWith(expect.objectContaining({ mount: "/Users/me/photos" }));
   });
 
-  it("has no animations with reduced motion", async () => {
-    prefersReducedMotion(true);
-    render(<App api={fakeApi([sandbox({ status: "booting" })])} />);
-    const dot = await screen.findByLabelText("booting");
-    expect(dot.className).not.toMatch(/animate-|transition/);
-    // Cards render in their final state at once: no enter opacity/transform to animate from.
-    const card = screen.getByRole("article", { name: "a" });
-    expect(card.style.opacity).toBe("");
-    expect(card.style.transform).toBe("");
+  it("sizes the box for who works in it and for the screen", async () => {
+    const api = fakeApi();
+    render(<App api={api} />);
+    const sheet = await openSheet();
+    const size = within(sheet).getByRole("slider", { name: "How big" });
+    const build = within(sheet).getByRole("button", { name: /Build the box/ });
+    // An agent gets Standard, and needs a job.
+    expect(size).toHaveValue("1");
+    expect(build).toBeDisabled();
+    await userEvent.click(within(sheet).getByRole("radio", { name: /Just a computer/ }));
+    expect(size).toHaveValue("0");
+    expect(within(sheet).queryByRole("textbox", { name: "The job" })).not.toBeInTheDocument();
+    expect(build).toBeEnabled();
+    // A screen needs at least Roomy.
+    await userEvent.click(within(sheet).getByRole("switch", { name: "A screen" }));
+    expect(size).toHaveValue("2");
+    fireEvent.change(size, { target: { value: "0" } });
+    expect(size).toHaveValue("2");
+    await userEvent.click(build);
+    expect(api.create).toHaveBeenCalledExactlyOnceWith({
+      desktop: true,
+      cpus: 2,
+      memoryMib: 4096,
+      network: "public",
+    });
+  });
+
+  it("opens on N, closes on Esc and builds on ⌘↵", async () => {
+    const api = fakeApi();
+    render(<App api={api} />);
+    await screen.findByRole("button", { name: "New box" });
+    await userEvent.keyboard("n");
+    const sheet = await screen.findByRole("dialog", { name: "New box" });
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(sheet).not.toBeInTheDocument());
+    await userEvent.keyboard("n");
+    const again = await screen.findByRole("dialog", { name: "New box" });
+    await userEvent.type(within(again).getByRole("textbox", { name: "The job" }), "sort my photos");
+    await userEvent.keyboard("{Meta>}{Enter}{/Meta}");
+    expect(api.create).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ harness: "claude-code", task: "sort my photos" }),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "New box" })).not.toBeInTheDocument());
+  });
+
+  it("offers a missing key, stores it, then creates", async () => {
+    const api = fakeApi();
+    api.missingCredentials = vi.fn(async () => ["anthropic", "openai"]);
+    render(<App api={api} />);
+    const sheet = await openSheet();
+    await userEvent.click(within(sheet).getByRole("radio", { name: /OpenCode/ }));
+    expect(within(sheet).getByRole("radio", { name: /OpenCode/ })).toHaveTextContent("Sign in once");
+    await userEvent.type(within(sheet).getByRole("textbox", { name: "The job" }), "fix it");
+    await userEvent.click(within(sheet).getByText("More options"));
+    await userEvent.selectOptions(within(sheet).getByRole("combobox", { name: "Key provider" }), "openai");
+    await userEvent.type(within(sheet).getByLabelText("OpenAI key"), "sk-proj-x");
+    await userEvent.click(within(sheet).getByRole("button", { name: /Build the box/ }));
+    expect(api.setCredential).toHaveBeenCalledExactlyOnceWith("openai", "sk-proj-x");
+    const stored = vi.mocked(api.setCredential).mock.invocationCallOrder[0] ?? 0;
+    expect(stored).toBeLessThan(vi.mocked(api.create).mock.invocationCallOrder[0] ?? 0);
+  });
+
+  it("says Signed in when the helper has a key, and doesn't create when storing a key fails", async () => {
+    const api = fakeApi();
+    api.missingCredentials = vi.fn(async (h: string) => (h === "codex" ? [] : ["anthropic"]));
+    api.setCredential = vi.fn(async () => {
+      throw new Error("keychain locked");
+    });
+    render(<App api={api} />);
+    const sheet = await openSheet();
+    await waitFor(() =>
+      expect(within(sheet).getByRole("radio", { name: /Codex CLI/ })).toHaveTextContent("Signed in"),
+    );
+    await userEvent.type(within(sheet).getByRole("textbox", { name: "The job" }), "fix it");
+    await userEvent.click(within(sheet).getByText("More options"));
+    await userEvent.type(within(sheet).getByLabelText("Anthropic key"), "sk-ant-x");
+    await userEvent.click(within(sheet).getByRole("button", { name: /Build the box/ }));
+    expect(await screen.findByText(/keychain locked/)).toBeInTheDocument();
+    expect(api.create).not.toHaveBeenCalled();
   });
 });
 
-describe("sandbox view", () => {
-  async function open(api: Api) {
+describe("narrated boot", () => {
+  beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }));
+
+  async function build(api: Api) {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    let finish = (_: Sandbox) => {};
+    api.create = vi.fn(() => new Promise<Sandbox>((resolve) => (finish = resolve)));
     render(<App api={api} />);
-    await userEvent.click(await screen.findByRole("button", { name: "Open a" }));
+    const sheet = await openSheet(user);
+    await user.type(within(sheet).getByRole("textbox", { name: "The job" }), "fix the tests");
+    await user.click(within(sheet).getByRole("button", { name: /choose a folder/ }));
+    await within(sheet).findByText("/Users/me/project");
+    await user.click(within(sheet).getByRole("switch", { name: "A screen" }));
+    await user.click(within(sheet).getByRole("button", { name: /Build the box/ }));
+    return { box: await card("New box, getting ready"), finish: (s: Sandbox) => finish(s) };
   }
 
-  it("shows the Desktop tab only for the desktop template", async () => {
+  it("names the stages for the box's options, holding the last until the create settles", async () => {
+    const api = fakeApi();
+    const { box, finish } = await build(api);
+    for (const stage of [
+      "Unpacking the box",
+      "Waking the computer",
+      "Moving in project",
+      "Switching on the screen",
+      "Getting Claude Code ready",
+      "Reading the job",
+    ]) {
+      expect(within(box).getByText(`${stage}…`)).toBeInTheDocument();
+      await act(() => vi.advanceTimersByTimeAsync(1200));
+    }
+    await act(() => vi.advanceTimersByTimeAsync(5000));
+    expect(within(box).getByText("Reading the job…")).toBeInTheDocument();
+    await act(async () => finish(sandbox({ name: "sandbox-1", harness: "claude-code" })));
+    await waitFor(() => expect(box).not.toBeInTheDocument());
+  });
+
+  it("says Beambox is preparing while the base snapshot isn't built", async () => {
+    const api = fakeApi();
+    api.baseReady = vi.fn(async () => false);
+    const { box } = await build(api);
+    expect(
+      await within(box).findByText("Preparing Beambox (first time only, a few minutes)…"),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("throw away", () => {
+  beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }));
+  const user = () => userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  const holdKey = async (name: string) =>
+    within(await card(name)).getByRole("button", { name: "Throw away: press and hold" });
+
+  it("fires nothing when released early, and the undo toast cancels a full hold", async () => {
+    const api = fakeApi([sandbox()]);
+    render(<App api={api} />);
+    const key = await holdKey("a");
+    fireEvent.pointerDown(key);
+    await act(() => vi.advanceTimersByTimeAsync(600));
+    fireEvent.pointerUp(key);
+    await act(() => vi.advanceTimersByTimeAsync(6000));
+    expect(screen.queryByText("Threw away a")).not.toBeInTheDocument();
+    expect(api.delete).not.toHaveBeenCalled();
+    // Held from the keyboard this time.
+    fireEvent.keyDown(key, { key: " " });
+    await act(() => vi.advanceTimersByTimeAsync(1200));
+    fireEvent.keyUp(key, { key: " " });
+    expect(await screen.findByText("Threw away a")).toBeInTheDocument();
+    expect(screen.queryByRole("article", { name: "a" })).not.toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(4000));
+    await user().click(await screen.findByRole("button", { name: "Undo" }));
+    await act(() => vi.advanceTimersByTimeAsync(5000));
+    expect(api.delete).not.toHaveBeenCalled();
+    expect(await card("a")).toBeInTheDocument();
+  });
+
+  it("deletes 5 s after a full hold without undo", async () => {
+    // A different name: sonner's toast store outlives each render.
+    const api = fakeApi([sandbox({ name: "b" })]);
+    render(<App api={api} />);
+    const key = await holdKey("b");
+    fireEvent.pointerDown(key);
+    await act(() => vi.advanceTimersByTimeAsync(1200));
+    fireEvent.pointerUp(key);
+    expect(await screen.findByText("Threw away b")).toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(4900));
+    expect(api.delete).not.toHaveBeenCalled();
+    await act(() => vi.advanceTimersByTimeAsync(200));
+    expect(api.delete).toHaveBeenCalledExactlyOnceWith("b");
+  });
+});
+
+describe("box view", () => {
+  async function open(api: Api, name = "a") {
+    render(<App api={api} />);
+    await userEvent.click(await screen.findByRole("button", { name: `Open ${name}` }));
+    return screen.findByRole("heading", { name });
+  }
+  const mode = (name: string) => screen.queryByRole("button", { name, pressed: true });
+
+  it("offers Screen only for boxes with a screen, and goes back on Esc", async () => {
     await open(fakeApi([sandbox({ template: "base" })]));
-    expect(screen.getByRole("tab", { name: "Terminal" })).toBeInTheDocument();
-    expect(screen.queryByRole("tab", { name: "Desktop" })).not.toBeInTheDocument();
+    expect(mode("Terminal")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Screen" })).not.toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    expect(await screen.findByRole("region", { name: "Shelf" })).toBeInTheDocument();
   });
 
-  it("shows the Desktop tab for the desktop template", async () => {
+  it("opens a box with a screen on its Screen", async () => {
     await open(fakeApi([sandbox({ template: "desktop", ports: [{ guest: 5900, host: 5901 }] })]));
-    expect(screen.getByRole("tab", { name: "Desktop" })).toBeInTheDocument();
+    expect(mode("Screen")).toBeInTheDocument();
   });
 
-  it("shows the actual host port of a published port", async () => {
-    await open(fakeApi([sandbox({ ports: [{ guest: 8080, host: 8081 }] })]));
-    await userEvent.click(screen.getByRole("tab", { name: "Ports" }));
-    expect(screen.getByText("127.0.0.1:8081")).toBeInTheDocument();
-  });
-
-  it("take over freezes the agent and hand back resumes it", async () => {
+  it("flips the lever to take over, and hands back with a note typed to the agent", async () => {
     const api = fakeApi([sandbox({ harness: "claude-code" })]);
+    // tmux attaches and redraws before the note is typed.
+    api.terminalOpen = vi.fn(async (_name: string, onData: (data: Uint8Array) => void) => {
+      setTimeout(() => onData(new Uint8Array([27])));
+      return 1;
+    });
     await open(api);
-    await userEvent.click(screen.getByRole("button", { name: "Take over" }));
-    expect(api.setTakeover).toHaveBeenCalledWith("a", true);
-    await userEvent.click(await screen.findByRole("button", { name: "Hand back" }));
+    const lever = screen.getByRole("switch", { name: "You drive" });
+    await userEvent.click(lever);
+    expect(api.setTakeover).toHaveBeenCalledExactlyOnceWith("a", true);
+    expect(lever).toHaveAttribute("aria-checked", "true");
+    await userEvent.click(lever);
+    const dialog = await screen.findByRole("dialog", { name: "Hand back to Claude?" });
+    await userEvent.type(
+      within(dialog).getByRole("textbox", { name: "Note for the agent" }),
+      "I fixed it{Enter}and the menu",
+    );
+    await userEvent.click(within(dialog).getByRole("button", { name: "Hand back" }));
+    await waitFor(() => expect(api.terminalClose).toHaveBeenCalledWith(1));
     expect(api.setTakeover).toHaveBeenLastCalledWith("a", false);
+    expect(api.terminalInput).toHaveBeenCalledExactlyOnceWith(1, "I fixed it and the menu\r");
+    // The agent reads the note once it runs again (see Decisions in specs/shelf-ui.md).
+    const handedBack = vi.mocked(api.setTakeover).mock.invocationCallOrder[1] ?? 0;
+    expect(handedBack).toBeLessThan(vi.mocked(api.terminalInput).mock.invocationCallOrder[0] ?? 0);
   });
 
-  it("shows the agent stopped banner with a restart instead of Take over", async () => {
-    const api = fakeApi([sandbox({ harness: "codex" })]);
-    api.agentStatus = vi.fn(async () => "exited" as const);
+  it("closes the hand-back dialog on Esc without leaving the box", async () => {
+    const api = fakeApi([sandbox({ harness: "codex" })], { a: "frozen" });
     await open(api);
-    const banner = await screen.findByRole("status");
-    expect(banner).toHaveTextContent("codex has stopped");
-    expect(screen.queryByRole("button", { name: "Take over" })).not.toBeInTheDocument();
-    await userEvent.click(within(banner).getByRole("button", { name: "Restart agent" }));
+    const lever = screen.getByRole("switch", { name: "You drive" });
+    await waitFor(() => expect(lever).toHaveAttribute("aria-checked", "true"));
+    await userEvent.click(lever);
+    await screen.findByRole("dialog", { name: "Hand back to Codex?" });
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.getByRole("heading", { name: "a" })).toBeInTheDocument();
+    expect(api.setTakeover).not.toHaveBeenCalled();
+  });
+
+  it("hands back without a note by only resuming the agent", async () => {
+    const api = fakeApi([sandbox({ harness: "codex" })], { a: "frozen" });
+    await open(api);
+    const lever = screen.getByRole("switch", { name: "You drive" });
+    await waitFor(() => expect(lever).toHaveAttribute("aria-checked", "true"));
+    await userEvent.click(lever);
+    const dialog = await screen.findByRole("dialog", { name: "Hand back to Codex?" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Hand back" }));
+    await waitFor(() => expect(api.setTakeover).toHaveBeenCalledExactlyOnceWith("a", false));
+    expect(api.terminalOpen).not.toHaveBeenCalled();
+    expect(api.terminalInput).not.toHaveBeenCalled();
+  });
+
+  it("offers Start agent again instead of the lever when the agent has stopped", async () => {
+    const api = fakeApi([sandbox({ harness: "codex" })], { a: "exited" });
+    await open(api);
+    const restart = await screen.findByRole("button", { name: "Start agent again" });
+    expect(screen.queryByRole("switch", { name: "You drive" })).not.toBeInTheDocument();
+    await userEvent.click(restart);
     expect(api.restartAgent).toHaveBeenCalledWith("a");
   });
 
-  it("shows logs as plain text, without terminal control codes", async () => {
-    const api = fakeApi([sandbox()]);
-    api.logs = vi.fn(async () => ["\x1b[34mhello\x1b[m\x1b[K\r\n", "world\n"]);
-    await open(api);
-    await userEvent.click(screen.getByRole("tab", { name: "Logs" }));
-    await waitFor(() => expect(document.querySelector("pre")?.textContent).toBe("hello\nworld\n"));
+  it("has no lever for a box without an agent", async () => {
+    await open(fakeApi([sandbox()]));
+    expect(screen.queryByRole("switch", { name: "You drive" })).not.toBeInTheDocument();
+  });
+
+  it("lists the box's web previews with their real host ports", async () => {
+    await open(fakeApi([sandbox({ ports: [{ guest: 8080, host: 8081 }] })]));
+    await userEvent.click(screen.getByRole("button", { name: "Web previews" }));
+    expect(screen.getByText("127.0.0.1:8081")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Open" }));
+    expect(screen.getByTitle("Port 8081")).toHaveAttribute("src", "http://127.0.0.1:8081");
+  });
+
+  it("says the VNC port is the screen instead of offering it as a page", async () => {
+    await open(fakeApi([sandbox({ template: "desktop", ports: [{ guest: 5900, host: 5901 }] })]));
+    await userEvent.click(screen.getByRole("button", { name: "Web previews" }));
+    expect(screen.getByText(/Desktop \(VNC\)/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Show the screen" }));
+    expect(mode("Screen")).toBeInTheDocument();
   });
 
   it("opens Files at /workspace, falls back to the root, and hides microsandbox's own folder", async () => {
@@ -394,42 +626,46 @@ describe("sandbox view", () => {
       ];
     });
     await open(api);
-    await userEvent.click(screen.getByRole("tab", { name: "Files" }));
+    await userEvent.click(screen.getByRole("button", { name: "Files" }));
     expect(await screen.findByText(/etc/)).toBeInTheDocument();
     expect(api.listDir).toHaveBeenCalledWith("a", "/workspace");
     expect(screen.queryByText(/\.msb/)).not.toBeInTheDocument();
-    // A link opens as a folder when it lists as one.
     await userEvent.click(screen.getByRole("button", { name: "🔗 bin" }));
     expect(api.listDir).toHaveBeenLastCalledWith("a", "/bin");
   });
 
-  it("says the VNC port is the desktop instead of offering it as a page", async () => {
-    await open(fakeApi([sandbox({ template: "desktop", ports: [{ guest: 5900, host: 5901 }] })]));
-    await userEvent.click(screen.getByRole("tab", { name: "Ports" }));
-    expect(screen.getByText(/Desktop \(VNC\)/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Open" })).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Desktop tab" }));
-    expect(screen.getByRole("tab", { name: "Desktop", selected: true })).toBeInTheDocument();
-  });
-
-  it("has no Take over and no activity feed for a plain sandbox", async () => {
-    await open(fakeApi([sandbox()]));
-    expect(screen.queryByRole("button", { name: "Take over" })).not.toBeInTheDocument();
-    expect(screen.queryByText("Agent activity")).not.toBeInTheDocument();
+  it("uploads dropped files and downloads a clicked one", async () => {
+    const api = fakeApi([sandbox()]);
+    api.listDir = vi.fn(async () => [{ path: "/workspace/notes.txt", dir: false }]);
+    api.readFile = vi.fn(async () => new Uint8Array([104, 105]));
+    URL.createObjectURL = vi.fn(() => "blob:x");
+    URL.revokeObjectURL = vi.fn();
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    await open(api);
+    await userEvent.click(screen.getByRole("button", { name: "Files" }));
+    const file = new File(["hi"], "up.txt");
+    fireEvent.drop(await screen.findByText(/Drop files here to upload/), { dataTransfer: { files: [file] } });
+    await waitFor(() =>
+      expect(api.writeFile).toHaveBeenCalledWith("a", "/workspace/up.txt", expect.any(Uint8Array)),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "📄 notes.txt" }));
+    await waitFor(() => expect(click).toHaveBeenCalled());
+    expect(api.readFile).toHaveBeenCalledWith("a", "/workspace/notes.txt");
+    click.mockRestore();
   });
 });
 
 describe("command line", () => {
   const desktop = sandbox({ name: "d", template: "desktop", ports: [{ guest: 5900, host: 5900 }] });
 
-  it("opens the Desktop tab of the sandbox `beambox desktop` launched the window for", async () => {
+  it("opens the Screen of the box `beambox desktop` launched the window for", async () => {
     const api = fakeApi([desktop]);
     api.takeOpen = vi.fn(async () => "d");
     render(<App api={api} />);
-    expect(await screen.findByRole("tab", { name: "Desktop", selected: true })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Screen", pressed: true })).toBeInTheDocument();
   });
 
-  it("switches to a sandbox's desktop when asked while the window is open", async () => {
+  it("switches to a box's screen when asked while the window is open", async () => {
     const api = fakeApi([sandbox(), desktop]);
     let open = (_: string) => {};
     api.onOpen = (handler) => {
@@ -440,7 +676,7 @@ describe("command line", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Open a" }));
     act(() => open("d"));
     expect(await screen.findByRole("heading", { name: "d" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Desktop", selected: true })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Screen", pressed: true })).toBeInTheDocument();
   });
 });
 
@@ -453,9 +689,9 @@ describe("hypervisor card", () => {
     [{ state: "unsupported", os: "macos" }, "Apple Silicon"],
   ];
   it.each(cases)("%o shows %s", async (hypervisor, text) => {
-    const api = fakeApi([], hypervisor);
+    const api = fakeApi([], {}, hypervisor);
     render(<App api={api} />);
-    await screen.findByRole("button", { name: "New sandbox" });
+    await screen.findByRole("button", { name: "New box" });
     await act(() => Promise.resolve());
     const cards = screen.queryAllByRole("alert");
     if (text === null) return expect(cards).toHaveLength(0);
@@ -466,7 +702,7 @@ describe("hypervisor card", () => {
   });
 
   it("enables Windows Hypervisor Platform and asks for a reboot", async () => {
-    const api = fakeApi([], { state: "missing", os: "windows" });
+    const api = fakeApi([], {}, { state: "missing", os: "windows" });
     render(<App api={api} />);
     await userEvent.click(await screen.findByRole("button", { name: "Enable Windows Hypervisor Platform" }));
     expect(api.enableHypervisor).toHaveBeenCalledOnce();

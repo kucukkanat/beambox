@@ -1,12 +1,12 @@
 ---
-status: approved       # draft | approved | built | shipped
+status: built          # draft | approved | built | shipped
 size: large
 created: 2026-11-18T18:20Z
 shipped:
 diff:
 new_deps: 0
 bounces: 0
-review_findings: 0
+review_findings: 10
 ---
 
 # Shelf UI: Beambox as a shelf of tactile boxes
@@ -117,6 +117,22 @@ React, Tailwind v4, shadcn (`button`, `popover`, `tabs`), `motion` (`layout`, sp
 - Boot stages are timed and narrated, not reported by the backend. Only the end of the create is real.
 - Sounds are on by default at a low gain. Mute affects sound only.
 - The Save point timeline is in `save-points.md`. This spec keeps today's Save point (toast with the name).
+- Handing back with a note calls `setTakeover(false)` first, then types the note as one line, after tmux's first
+  redraw. During take-over tmux shows the
+  shell window (`tmux new-window`), so a note typed before hand-back would run as a shell command. After hand-back
+  window 0 (the agent) is active again and the agent reads it.
+- `onFolderDrop` is wired to `onDragDropEvent`, but `tauri.conf.json` keeps `dragDropEnabled: false`: turning it on
+  stops HTML5 file drops in the webview, which Files upload needs. Until Files uploads by path, folders are lent by
+  clicking (`pickFolder`), and the sheet only says "Click to choose a folder"; dropping one starts working once
+  the flag is flipped.
+- A sign-in box goes to the tray instead of opening its terminal straight away (the tray's key opens it).
+- The job is shown only for boxes made by this window; the backend doesn't keep it. Others say who works in them.
+- "How long it has been running" counts from when this window first saw the box run.
+- The box view drops the Logs tab: the card's screen shows the log. Its Web previews mode holds today's Ports list,
+  and opening a port shows it inside the screen.
+- The hold key is `HoldKey` in `src/keys.tsx` (reusable, with `Tool`, `Led` and `Icon`). The box view leaves room
+  for panels below its screen (`BoxView.tsx`, marked with a comment).
+- With an agent, Build the box needs any non-empty job.
 
 ## Out of scope
 - Detecting an agent that waits for input or has finished ("Ready to review"), Allow/Deny buttons, and the

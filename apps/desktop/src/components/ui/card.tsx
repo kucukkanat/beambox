@@ -1,11 +1,7 @@
 import type { ComponentProps } from "react";
 import { cn } from "../../lib/utils.ts";
 
+/** A chassis panel (styles in index.css). */
 export function Card({ className, ...props }: ComponentProps<"div">) {
-  return (
-    <div
-      className={cn("rounded-xl border border-border bg-card text-card-foreground shadow-sm", className)}
-      {...props}
-    />
-  );
+  return <div className={cn("panel", className)} {...props} />;
 }

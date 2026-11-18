@@ -8,33 +8,45 @@ Beambox desktop: a Tauri 2 app that gives each AI agent its own computer, a micr
   ([`apps/sandbox-mcp`](../sandbox-mcp)) registered in it, and starts the harness on the task in the tmux session
   `agent`. The Terminal tab and `beambox attach` join that session, so you see the agent and can type to it.
   Agents never run on your computer; the app and CLI only manage sandboxes.
-- **GUI**: a grid of sandbox cards (start, stop, fork, snapshot, delete with 5 s undo). Each sandbox has Terminal,
-  Files, Logs, Ports and, with a desktop, a noVNC Desktop tab. Agent sandboxes also get **Take over**, which
-  freezes the harness (SIGSTOP) so you can use the terminal and desktop undisturbed, and **Hand back** (SIGCONT).
-  - A create shows a booting card until its sandbox is there. The ▾ form takes a name, vCPUs, memory and a folder
-    to mount (typed, or picked with **Browse…**, `tauri-plugin-dialog`); empty fields show the defaults.
-  - Each card shows CPU and memory use over the last minute. An agent sandbox whose harness has exited (a sign-in
-    that timed out, say) shows **Agent stopped**, an amber dot and **Restart agent** (`Core::agent_status`,
-    `Core::restart_agent_session`: a fresh `agent` tmux session without the task).
+- **GUI**: a shelf of "boxes" for non-developers, in a hardware look (`src/index.css`, from
+  `specs/assets/shelf-prototype.html`): physical keys (`Button`'s `key` variant), LEDs, a shutter on sleeping boxes
+  and synthesised key sounds (`src/sound.ts`, Web Audio; the mute key keeps `beambox.muted` in localStorage).
+  - Each box's state (`src/box.ts`) comes from `status`, the harness's status and whether it still waits for a
+    sign-in. It's also the shelf's sort order: Agent stopped, Crashed, Sign in (made by this window without a key,
+    until you open its terminal or dismiss it), Getting ready, Working, You're driving, Ready for you, Asleep. The
+    first three also show in the **Waiting for you** tray, with **Start agent again** (`Core::restart_agent_session`:
+    a fresh `agent` tmux session without the task), **Wake** or **Open terminal**.
+  - A card's screen shows the last lines of the terminal output as plain text (`src/ansi.ts`), polled every 2 s.
+    Its keys are Sleep/Wake (stop/start), Save point (snapshot), Try another way (fork) and Throw away, a
+    press-and-hold key (`HoldKey` in `src/keys.tsx`, 1.2 s) followed by a 5 s undo toast.
+  - **New box** (or `N`) opens a sheet: who works in it (Claude Code, Codex CLI, OpenCode or just a computer, with
+    "Signed in" or "Sign in once"), the job, a folder to lend (click for `tauri-plugin-dialog`, or drop one:
+    `onFolderDrop`), a screen (a desktop), a size fader (Light 1 CPU/1 GB, Standard 2/2, Roomy 2/4, Heavy 4/8; a
+    screen needs Roomy) and the network. More options holds the name, web ports and an optional key. While a create
+    runs, its card narrates the boot on a timer; only the end of the create is real.
+  - Opening a box shows one large screen with Screen (noVNC, desktop boxes), Terminal, Files and Web previews.
+    Agent boxes get the **AGENT / YOU lever**: YOU freezes the harness (SIGSTOP) so you can use the terminal and
+    desktop undisturbed; handing back (SIGCONT) can type a note into the agent's session, so it knows what you
+    changed. `Esc` goes back to the shelf.
   - Files opens at `/workspace` (the root if there's none), hides microsandbox's `/.msb` and opens symlinks to
-    folders as folders. Logs shows the terminal output as plain text (`src/ansi.ts`). Ports lists the desktop's VNC
-    port as the Desktop tab rather than as a web page.
+    folders as folders. Web previews list the published ports, with the desktop's VNC port as the Screen rather than
+    as a web page.
 - **Signing in** happens inside the sandbox, with a subscription or a key. Without a stored key, the harness signs
   in in its own terminal before starting on the task: Claude Code runs `claude auth login`, Codex runs
-  `codex login --device-auth`, and OpenCode starts on its free models (`/connect` adds a provider). The app opens
-  the agent's Terminal tab for it. Sign-in pages open in the computer's browser: the sandbox's `$BROWSER`
+  `codex login --device-auth`, and OpenCode starts on its free models (`/connect` adds a provider). The box shows
+  up in the Waiting for you tray, whose **Open terminal** shows it. Sign-in pages open in the computer's browser: the sandbox's `$BROWSER`
   (`images/agent/beambox-open`) sends an OSC 1337 `BeamboxOpen=<url>` through tmux (`allow-passthrough all`),
   and the Terminal tab opens https links only (`src/links.ts`).
 - **Logins are reused per harness.** Beambox keeps each harness's newest login file (`login_path` in `agent.rs`)
   in `<app data>/logins/<harness>`, owner-only. It collects it from that harness's running sandboxes when one is
   created, stopped or deleted, and copies it into every new sandbox of that harness, so you sign in once per
   harness. Logins live on sandbox disks (and in forks and snapshots of them).
-- **Stored keys** (optional; Settings → Credentials, the New sandbox form, or `beambox credentials`): an Anthropic key
+- **Stored keys** (optional; ⋯ → Settings, the New box sheet's More options, or `beambox credentials`): an Anthropic key
   or `claude setup-token` token and an OpenAI key, kept in the OS keychain (`keyring` crate) and passed only as
   the harness process's environment at start. A stored key wins over a saved login.
 - **CLI**: the same `beambox` binary run with a command. Everything the window does, from a terminal (see
   [Command line](#command-line)).
-- **Desktop tab**: noVNC connects to a per-sandbox proxy on 127.0.0.1 that only accepts the app's own webview
+- **Screen** (desktop boxes): noVNC connects to a per-sandbox proxy on 127.0.0.1 that only accepts the app's own webview
   origin, so other pages on the machine can't reach the VNC server. The Resolution menu in its top-right corner
   picks **Fit window** (the screen follows the tab, drawn 1:1) or a fixed size from Xvnc's list (`xrandr -s` through
   the `desktop_resize` command), scaled down to fit so everything looks smaller. The choice is kept, and applied
@@ -103,14 +115,14 @@ WebKitGTK etc. on Linux; WebView2 + MSVC on Windows). No environment variables a
 
 ## Command line
 
-**Install the beambox command** (in the app's header) puts `beambox` on the PATH: a two-line launcher in
+**Install the beambox command** (in the header's ⋯ menu) puts `beambox` on the PATH: a two-line launcher in
 `/usr/local/bin` on macOS (one admin prompt), `~/.local/bin` on Linux (the `.deb` already installs
 `/usr/bin/beambox`), and the user PATH on Windows. It's a launcher rather than a symlink because Tauri won't start
 from a symlinked executable on macOS.
 
 ```bash
 beambox list                                   # table; add --json to any command for scripts
-beambox create web -t desktop -p 3000 --mount .  # same options as the window's ▾ menu
+beambox create web -t desktop -p 3000 --mount .  # same options as the New box sheet
 beambox create fixer --harness claude-code --task "fix the tests" --mount . [--desktop]
 beambox create shared -t desktop --web         # CLI only: also prints a link to the desktop in a browser
 beambox attach fixer                           # the agent's terminal (tmux); detach with Ctrl-b d
@@ -123,7 +135,7 @@ beambox start|stop|fork|snapshot|delete web
 beambox takeover fixer on                      # freeze the agent; `off` hands back
 beambox credentials set anthropic              # reads the key from stdin, hidden at a terminal
 beambox credentials list                       # names only; `remove <name>` forgets one
-beambox desktop web                            # open the window on web's Desktop tab
+beambox desktop web                            # open the window on web's Screen
 beambox doctor                                 # hypervisor and bundled runtime check
 ```
 
@@ -179,13 +191,13 @@ Run on a fresh machine (macOS Apple Silicon, Ubuntu with KVM, Windows 11) for ev
 1. Install the bundle (`.dmg` → drag to Applications; `.deb`/`.AppImage`; `.msi`) and open Beambox.
 2. If a hypervisor card shows, follow it (Windows: **Enable Windows Hypervisor Platform**, reboot). Otherwise
    none shows.
-3. Click 1: **New sandbox**. The card goes from booting (pulsing amber) to running (green).
-4. Click 2: **Open**. The Terminal tab is already active and shows a `sandbox-1:/#` prompt.
-5. Pass if the prompt appears within 3 clicks. Also check: `echo hi` works; with no key stored,
-   **▾ → Harness: Claude Code, Task: "list the files here"** opens its Terminal tab on Claude's sign-in, the
-   sign-in page opens in your browser, and after signing in Claude works on the task. A second Claude Code
-   sandbox starts signed in. **Take over** / **Hand back** pause and resume it.
-6. **Install the beambox command**, then in a new terminal: `beambox list`, `beambox exec sandbox-1 -- uname -a`,
+3. **New box** → **Just a computer** → **Build the box**. The card narrates its boot, then says Ready for you.
+4. Click its screen. The Terminal is already showing a `sandbox-1:/#` prompt.
+5. Pass if the prompt appears within 4 clicks. Also check: `echo hi` works; with no key stored, a **Claude Code**
+   box with the job "list the files here" shows **Sign in** in the Waiting for you tray; **Open terminal** shows
+   Claude's sign-in, the sign-in page opens in your browser, and after signing in Claude works on the job. A second
+   Claude Code box starts signed in. The **AGENT / YOU** lever pauses and resumes it.
+6. **⋯ → Install the beambox command**, then in a new terminal: `beambox list`, `beambox exec sandbox-1 -- uname -a`,
    `beambox shell sandbox-1` (type `exit` to leave) and `beambox desktop <a desktop sandbox>`.
 
 macOS: the app is signed with `Entitlements.plist` (`com.apple.security.hypervisor`). Check early whether a

@@ -44,7 +44,7 @@ export function HypervisorCard({ api }: { api: Api }) {
   }
 
   return (
-    <Card role="alert" className="flex flex-col gap-2 border-amber-500/50 p-4">
+    <Card role="alert" className="flex flex-col gap-2 border-[var(--led-amber)] p-4">
       <h2 className="font-semibold">{title}</h2>
       <div className="text-muted-foreground text-sm">{body}</div>
       {error && <p className="text-destructive text-sm">{error}</p>}

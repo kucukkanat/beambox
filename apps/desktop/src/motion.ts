@@ -26,8 +26,3 @@ export function useItemMotion() {
         transition: spring,
       };
 }
-
-/** Class for the status-dot pulse while a sandbox boots. */
-export function usePulse() {
-  return useReducedMotion() ? "" : "animate-pulse";
-}

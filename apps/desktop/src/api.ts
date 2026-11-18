@@ -1,5 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
@@ -61,6 +62,8 @@ export type Api = {
   restartAgent(name: string): Promise<void>;
   /** A folder on this computer picked in the system dialog, or null when cancelled. */
   pickFolder(): Promise<string | null>;
+  /** A folder (or file) dropped on the window, by its path on this computer. */
+  onFolderDrop(handler: (path: string) => void): () => void;
   /** Names of the stored credentials (`anthropic`, `openai`), never their values. */
   credentials(): Promise<string[]>;
   /** Open a link (e.g. a harness's sign-in page) in the computer's default browser. */
@@ -112,6 +115,13 @@ export const tauriApi: Api = {
   pickFolder: async () => {
     const folder = await open({ directory: true, title: "Mount a folder at /workspace" });
     return typeof folder === "string" ? folder : null;
+  },
+  onFolderDrop: (handler) => {
+    const unlisten = getCurrentWebview().onDragDropEvent((event) => {
+      const path = event.payload.type === "drop" ? event.payload.paths[0] : undefined;
+      if (path) handler(path);
+    });
+    return () => void unlisten.then((stop) => stop());
   },
   credentials: () => invoke("credentials_list"),
   openUrl: (url) => openUrl(url),
