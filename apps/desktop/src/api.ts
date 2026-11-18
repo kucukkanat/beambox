@@ -16,7 +16,7 @@ export type Sandbox = {
   ports: Port[];
 };
 export type Harness = "claude-code" | "codex" | "opencode";
-/** Everything left out gets the Rust core's default (base, 1 vCPU, 256 MiB, auto name, public network). */
+/** Everything left out gets the Rust core's default (base, 1 vCPU, 1 GiB, auto name, public network). */
 export type CreateOpts = {
   name?: string;
   cpus?: number;

@@ -302,7 +302,7 @@ function NewSandbox({ api, onCreate }: { api: Api; onCreate(opts: CreateOpts): v
   const browse = () => void api.pickFolder().then((folder) => folder && setMount(folder), showError);
   // The core's defaults, so the empty fields say what you get.
   const defaultCpus = harness || desktop ? 2 : 1;
-  const defaultMemory = desktop ? 4096 : harness ? 2048 : 256;
+  const defaultMemory = desktop ? 4096 : harness ? 2048 : 1024;
   const field = "flex flex-col gap-1 text-sm";
   const input = "h-8 rounded-md border border-border bg-background px-2";
   return (

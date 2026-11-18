@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Templates: (name, default memory MiB, guest ports published by default).
-pub const TEMPLATES: &[(&str, u32, &[u16])] = &[("base", 256, &[]), ("desktop", 4096, &[VNC_PORT])];
+pub const TEMPLATES: &[(&str, u32, &[u16])] = &[("base", 1024, &[]), ("desktop", 4096, &[VNC_PORT])];
 pub const VNC_PORT: u16 = 5900;
 /// The guest port of the desktop in a browser (`CreateOpts::web`, start-desktop's web desktop).
 pub const WEB_PORT: u16 = 6080;
@@ -40,7 +40,7 @@ pub struct CreateOpts {
     pub desktop: Option<bool>,
     /// vCPUs, default 1 (2 for agents and desktops: Chromium is slow on one).
     pub cpus: Option<u8>,
-    /// Memory in MiB, default 256 (4096 for desktops, 2048 for agents, 4096 for agents with a desktop).
+    /// Memory in MiB, default 1024 (4096 for desktops, 2048 for agents, 4096 for agents with a desktop).
     pub memory_mib: Option<u32>,
     /// Host folder to mount at /workspace.
     pub mount: Option<String>,
@@ -624,7 +624,7 @@ mod tests {
         let spec = created(&fake)[0].clone();
         assert_eq!(
             (spec.template.as_str(), spec.image.as_str(), spec.cpus, spec.memory_mib, spec.network.as_str()),
-            ("base", "debian:trixie-slim", 1, 256, "public")
+            ("base", "debian:trixie-slim", 1, 1024, "public")
         );
         assert!(spec.ports.is_empty() && spec.mount.is_none() && spec.harness.is_none() && spec.setup.is_none());
         assert_eq!(spec.snapshot, Some(base_snapshot_name()));
@@ -634,7 +634,7 @@ mod tests {
     async fn desktop_template_gets_more_memory_and_a_vnc_port() {
         let (_, core) = core_with(|_| true);
         let info = core.create(CreateOpts { template: Some("desktop".into()), ..Default::default() }).await.unwrap();
-        // A browser needs more than the base 256 MiB.
+        // A browser needs more than the base 1 GiB.
         assert_eq!((info.cpus, info.memory_mib), (2, 4096));
         assert_eq!(info.ports, [Port { guest: VNC_PORT, host: VNC_PORT }]);
         // `desktop: true` without a harness is the same thing.

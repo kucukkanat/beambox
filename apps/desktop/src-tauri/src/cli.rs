@@ -25,7 +25,7 @@ pub enum Command {
     Create {
         /// Defaults to sandbox-<n>.
         name: Option<String>,
-        /// `base` (Alpine, 256 MiB) or `desktop` (X desktop over VNC, 512 MiB).
+        /// `base` (Debian, 1 GiB) or `desktop` (X desktop over VNC, 4 GiB).
         #[arg(short, long, value_parser = ["base", "desktop"])]
         template: Option<String>,
         /// Make an agent sandbox: install this harness and start it in tmux session `agent`.

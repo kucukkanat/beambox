@@ -154,7 +154,7 @@ doesn't wait for GUI-subsystem programs, so output can land after the next promp
   kind, about 4 GiB each) when the app starts and after a build. Sandboxes made from them keep working: their
   disks are their own. The SDK lists a snapshot's member and group separately; Beambox joins them into the
   `<group>:<member>` name.
-- **Defaults:** plain sandboxes 1 vCPU and 256 MiB; plain desktops 2 vCPUs and 4 GiB, since Chromium crawls on
+- **Defaults:** plain sandboxes 1 vCPU and 1 GiB (enough for the harnesses every sandbox carries); plain desktops 2 vCPUs and 4 GiB, since Chromium crawls on
   one; agent sandboxes 2 vCPUs and 2 GiB (4 GiB with a desktop). The app runs `start-desktop` after each boot of a
   desktop. A plain sandbox's terminal is bash.
 - **What's in a desktop:** see [`packages/desktop-image`](../../packages/desktop-image). Xvnc, openbox with
