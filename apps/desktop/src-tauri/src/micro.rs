@@ -36,6 +36,7 @@ fn info(handle: &SandboxHandle) -> Result<SandboxInfo> {
         memory_mib: spec.resources.memory_mib,
         harness: label(HARNESS),
         ports,
+        notice: None,
     })
 }
 
@@ -181,13 +182,22 @@ mod tests {
     async fn real_desktop_boots_from_the_local_snapshot() {
         let core = core();
         let opts = |name: &str| CreateOpts { name: Some(name.into()), template: Some("desktop".into()), ..Default::default() };
+        let had_snapshot = core.backend.has_snapshot(&snapshot_name(None, true).unwrap()).await.unwrap();
         for name in ["it-desktop-1", "it-desktop-2"] {
             let _ = core.backend.delete(name).await;
             let info = core.create(opts(name)).await.unwrap();
             assert_eq!(info.template.as_str(), "desktop");
-            let out = core.backend.exec(name, "pgrep Xvnc >/dev/null && pgrep tint2 >/dev/null && which openbox").await.unwrap();
+            // Until the image is published (`OWNER` in its name), the first desktop falls back to the local build
+            // and says so; later ones boot from that snapshot.
+            if crate::core::DESKTOP_IMAGE.contains("/OWNER/") && name == "it-desktop-1" && !had_snapshot {
+                assert!(info.notice.as_deref().unwrap_or("").contains("built the desktop on this computer"), "{info:?}");
+            }
+            let out = core.backend.exec(name, "pgrep Xvnc >/dev/null && pgrep tint2 >/dev/null && pgrep plank >/dev/null && which openbox chromium").await.unwrap();
             assert_eq!(out.exit_code, 0, "{out:?}");
         }
+        // The image's CMD stays in the foreground while the desktop runs (`timeout` ends it: 124).
+        let out = core.backend.exec("it-desktop-1", "timeout 5 beambox-desktop; echo $?").await.unwrap();
+        assert_eq!(out.stdout, "124\n", "{out:?}");
         // A restarted or forked desktop keeps the old X lock on disk; its desktop must still come up.
         let running = "pgrep Xvnc >/dev/null && pgrep openbox >/dev/null && netstat -ltn | grep -q ':5900 '";
         core.backend.stop("it-desktop-1").await.unwrap();

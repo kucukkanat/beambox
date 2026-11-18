@@ -10,10 +10,13 @@ use std::sync::Arc;
 pub const TEMPLATES: &[(&str, &str, u32, &[u16])] = &[
     // (name, image, default memory MiB, guest ports published by default)
     ("base", "alpine:3.22", 256, &[]),
-    // Built locally into a snapshot from this image the first time it is used; see `snapshot_for`.
-    // Debian, like agent sandboxes: the dock and the browser aren't packaged for Alpine.
-    ("desktop", agent::IMAGE, 2048, &[VNC_PORT]),
+    // Pulled from the registry; built locally into a snapshot when that fails (see `create`).
+    ("desktop", DESKTOP_IMAGE, 2048, &[VNC_PORT]),
 ];
+/// The Desktop template's image: `images/desktop/` on Debian, built and published by
+/// `.github/workflows/desktop-image.yml`. Its tag follows the desktop snapshot's member (`snapshot_key`): bump
+/// both when `images/desktop/` changes.
+pub const DESKTOP_IMAGE: &str = "ghcr.io/OWNER/beambox-desktop:5";
 pub const VNC_PORT: u16 = 5900;
 
 /// Sandboxes with this name prefix are Beambox's own build machines, hidden from the GUI and the CLI.
@@ -25,11 +28,9 @@ pub const BUILD_PREFIX: &str = "beambox-build-";
 pub fn snapshot_key(harness: Option<&str>, desktop: bool) -> Option<(String, String)> {
     match (harness, desktop) {
         (None, false) => None,
-        (None, true) => Some(("beambox-build-desktop".into(), "beambox-desktop-4".into())),
-        (Some(h), d) => {
-            let key = if d { format!("{h}-desktop") } else { h.to_string() };
-            Some((format!("{BUILD_PREFIX}{key}"), format!("beambox-{key}-5")))
-        }
+        (None, true) => Some(("beambox-build-desktop".into(), "beambox-desktop-5".into())),
+        (Some(h), false) => Some((format!("{BUILD_PREFIX}{h}"), format!("beambox-{h}-5"))),
+        (Some(h), true) => Some((format!("{BUILD_PREFIX}{h}-desktop"), format!("beambox-{h}-desktop-6"))),
     }
 }
 
@@ -74,9 +75,10 @@ pub struct Core {
     /// Holds `snapshot-build.lock`, which serialises snapshot builds across the app and CLI processes, so
     /// concurrent creates build each snapshot once, and `logins/<harness>`, each harness's latest sign-in.
     lock_dir: PathBuf,
-    /// Picking a free name and ports and creating the sandbox happen one create at a time, so two creates never
-    /// pick the same ones.
-    creating: tokio::sync::Mutex<()>,
+    /// Picking a free name and ports happens one create at a time, and what's picked stays `pending` until its
+    /// sandbox exists, so two creates never pick the same ones. Booting (and pulling an image) runs unlocked.
+    picking: tokio::sync::Mutex<()>,
+    pending: std::sync::Mutex<(Vec<String>, Vec<u16>)>,
 }
 
 impl Core {
@@ -86,7 +88,7 @@ impl Core {
     }
 
     pub fn with_port_probe(backend: Arc<dyn SandboxBackend>, secrets: Arc<dyn Secrets>, probe: fn(u16) -> bool) -> Self {
-        Self { backend, secrets, is_port_free: probe, lock_dir: std::env::temp_dir(), creating: Default::default() }
+        Self { backend, secrets, is_port_free: probe, lock_dir: std::env::temp_dir(), picking: Default::default(), pending: Default::default() }
     }
 
     /// The harness's credential as `(variable, value)`, or which key is missing.
@@ -124,31 +126,52 @@ impl Core {
         if harness.is_some() {
             (image, memory) = (agent::IMAGE, if desktop { 4096 } else { 2048 });
         }
-        // The snapshot first: building one can take minutes, and other creates finish meanwhile.
-        let snapshot = match snapshot_key(harness.map(|h| h.name), desktop) {
-            Some(_) => Some(self.snapshot_for(harness, desktop).await?),
-            None => None,
-        };
-        let creating = self.creating.lock().await;
-        let name = match opts.name {
-            Some(name) => name,
-            None => self.free_name("sandbox").await?,
-        };
-        let ports = self.pick_ports(default_ports.iter().copied().chain(opts.ports.unwrap_or_default())).await?;
-        let spec = Spec {
-            name,
-            template,
+        let boot = |image: &str, snapshot: Option<String>| Spec {
+            name: opts.name.clone().unwrap_or_default(),
+            template: template.clone(),
             image: image.into(),
             cpus: opts.cpus.unwrap_or(if harness.is_some() { 2 } else { 1 }),
             memory_mib: opts.memory_mib.unwrap_or(memory),
-            mount: opts.mount,
-            network: opts.network.unwrap_or_else(|| "public".into()),
-            ports,
+            mount: opts.mount.clone(),
+            network: opts.network.clone().unwrap_or_else(|| "public".into()),
+            ports: vec![],
             harness: harness.map(|h| h.name.to_string()),
             snapshot,
         };
-        let info = self.backend.create(spec).await?;
-        drop(creating);
+        let ports: Vec<u16> = default_ports.iter().copied().chain(opts.ports.clone().unwrap_or_default()).collect();
+        let info = if harness.is_none() && desktop {
+            // A plain desktop boots from the published image, unless it was built here before (the same desktop).
+            // If creating from the image fails, the same desktop is built here.
+            let local = snapshot_name(None, true).expect("the desktop has a snapshot");
+            if self.backend.has_snapshot(&local).await? {
+                self.boot(self.reserve(boot(image, Some(local)), &ports).await?).await?
+            } else {
+                let spec = self.reserve(boot(image, None), &ports).await?;
+                let name = spec.name.clone();
+                match self.boot(spec).await {
+                    Ok(info) => info,
+                    Err(e) => {
+                        // It may have booted and then failed to start its desktop.
+                        let _ = self.backend.delete(&name).await;
+                        let snapshot = self.snapshot_for(None, true).await?;
+                        let mut info = self.boot(self.reserve(boot(image, Some(snapshot)), &ports).await?).await?;
+                        info.notice = Some(format!(
+                            "Couldn't start the desktop from {image} ({}), so Beambox built the desktop on this \
+                             computer.",
+                            e.trim()
+                        ));
+                        info
+                    }
+                }
+            }
+        } else {
+            // The snapshot first: building one can take minutes, and other creates finish meanwhile.
+            let snapshot = match snapshot_key(harness.map(|h| h.name), desktop) {
+                Some(_) => Some(self.snapshot_for(harness, desktop).await?),
+                None => None,
+            };
+            self.boot(self.reserve(boot(image, snapshot), &ports).await?).await?
+        };
         if let Some(h) = harness {
             // Signed in once already? Reuse that login, unless a stored key is used instead.
             if env.is_none() {
@@ -157,6 +180,33 @@ impl Core {
             self.start_agent(&info, h, opts.task.as_deref(), env).await?;
         }
         Ok(info)
+    }
+
+    /// Give `spec` a free name (unless it has one) and host ports for `guest_ports`, held as pending until `boot`.
+    async fn reserve(&self, mut spec: Spec, guest_ports: &[u16]) -> Result<Spec> {
+        let _one_at_a_time = self.picking.lock().await;
+        if spec.name.is_empty() {
+            spec.name = self.free_name("sandbox").await?;
+        } else if self.pending.lock().unwrap().0.contains(&spec.name)
+            || self.backend.list().await?.iter().any(|s| s.name == spec.name)
+        {
+            return Err(format!("sandbox {} already exists", spec.name));
+        }
+        spec.ports = self.pick_ports(guest_ports.iter().copied()).await?;
+        let mut pending = self.pending.lock().unwrap();
+        pending.0.push(spec.name.clone());
+        pending.1.extend(spec.ports.iter().map(|p| p.host));
+        Ok(spec)
+    }
+
+    /// Create a sandbox `reserve` named, then release its name and ports.
+    async fn boot(&self, spec: Spec) -> Result<SandboxInfo> {
+        let (name, hosts): (String, Vec<u16>) = (spec.name.clone(), spec.ports.iter().map(|p| p.host).collect());
+        let result = self.backend.create(spec).await;
+        let mut pending = self.pending.lock().unwrap();
+        pending.0.retain(|n| *n != name);
+        pending.1.retain(|p| !hosts.contains(p));
+        result
     }
 
     fn login_file(&self, harness: &Harness) -> PathBuf {
@@ -330,6 +380,7 @@ impl Core {
     async fn pick_ports(&self, guests: impl Iterator<Item = u16>) -> Result<Vec<Port>> {
         let mut taken: Vec<u16> =
             self.backend.list().await?.iter().flat_map(|s| s.ports.iter().map(|p| p.host)).collect();
+        taken.extend(self.pending.lock().unwrap().1.iter());
         let mut ports = Vec::new();
         for guest in guests {
             let host = crate::ports::first_free(guest, |p| !taken.contains(&p) && (self.is_port_free)(p))
@@ -342,7 +393,8 @@ impl Core {
 
     /// `<prefix>-<n>` with the smallest unused n.
     pub async fn free_name(&self, prefix: &str) -> Result<String> {
-        let names: Vec<String> = self.backend.list().await?.into_iter().map(|s| s.name).collect();
+        let mut names: Vec<String> = self.backend.list().await?.into_iter().map(|s| s.name).collect();
+        names.extend(self.pending.lock().unwrap().0.iter().cloned());
         Ok((1..).map(|n| format!("{prefix}-{n}")).find(|n| !names.contains(n)).expect("unbounded"))
     }
 
@@ -611,7 +663,7 @@ mod tests {
         let info = core.create(opts).await.unwrap();
         assert_eq!((info.template.as_str(), info.memory_mib), ("desktop", 4096));
         let spec = fake.specs.lock().unwrap().last().unwrap().clone();
-        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-5"));
+        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-6"));
     }
 
     #[tokio::test]
@@ -628,26 +680,92 @@ mod tests {
         (a.unwrap(), b.unwrap());
         core.create(named("c", Some("codex"), true)).await.unwrap();
         core.create(named("d", Some("codex"), true)).await.unwrap();
-        core.create(named("e", None, true)).await.unwrap();
-        core.create(named("f", None, true)).await.unwrap();
 
         let builds: Vec<_> = fake.execs.lock().unwrap().iter().filter(|(_, c)| c.starts_with("set -e")).map(|(s, _)| s.clone()).collect();
-        assert_eq!(builds, ["beambox-build-codex", "beambox-build-codex-desktop", "beambox-build-desktop"]);
+        assert_eq!(builds, ["beambox-build-codex", "beambox-build-codex-desktop"]);
         let specs = fake.specs.lock().unwrap().clone();
         let snapshot = |name: &str| specs.iter().find(|s| s.name == name).unwrap().snapshot.clone().unwrap();
         assert_eq!(snapshot("a"), snapshot("b"));
-        assert_eq!(snapshot("c"), "beambox-build-codex-desktop:beambox-codex-desktop-5");
-        assert_eq!(snapshot("e"), "beambox-build-desktop:beambox-desktop-4");
+        assert_eq!(snapshot("c"), "beambox-build-codex-desktop:beambox-codex-desktop-6");
         let c = specs.iter().find(|s| s.name == "c").unwrap();
         assert_eq!((c.memory_mib, c.ports.len(), c.template.as_str()), (4096, 1, "desktop"));
         let names: Vec<_> = core.backend.list().await.unwrap().into_iter().map(|s| s.name).collect();
-        assert_eq!(names, ["a", "b", "c", "d", "e", "f"], "build sandboxes are deleted");
+        assert_eq!(names, ["a", "b", "c", "d"], "build sandboxes are deleted");
+    }
+
+    fn plain_desktop() -> CreateOpts {
+        CreateOpts { desktop: Some(true), ..Default::default() }
+    }
+
+    #[tokio::test]
+    async fn a_desktop_boots_from_the_published_image() {
+        let (fake, core) = core_with(|_| true);
+        let info = core.create(plain_desktop()).await.unwrap();
+        assert_eq!((info.template.as_str(), info.notice.as_deref()), ("desktop", None));
+        let spec = fake.specs.lock().unwrap()[0].clone();
+        assert_eq!((spec.image.as_str(), spec.snapshot.as_deref()), (DESKTOP_IMAGE, None));
+        assert!(fake.execs.lock().unwrap().is_empty(), "nothing is built");
+    }
+
+    #[tokio::test]
+    async fn when_the_image_cant_be_pulled_the_desktop_is_built_locally_and_says_so() {
+        let (fake, core) = core_with(|_| true);
+        fake.failing_images.lock().unwrap().insert(DESKTOP_IMAGE.into());
+        let info = core.create(plain_desktop()).await.unwrap();
+        let notice = info.notice.unwrap();
+        assert!(notice.contains("built the desktop on this computer"), "{notice}");
+        assert!(notice.contains(DESKTOP_IMAGE) && notice.contains("registry unreachable"), "{notice}");
+        assert_eq!((info.name.as_str(), info.ports.as_slice()), ("sandbox-1", &[Port { guest: VNC_PORT, host: VNC_PORT }][..]));
+        let spec = fake.specs.lock().unwrap().last().unwrap().clone();
+        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-desktop:beambox-desktop-5"));
+        assert_eq!((spec.template.as_str(), spec.memory_mib), ("desktop", 2048));
+        // The next one boots from that snapshot straight away: the same desktop, without asking the registry again.
+        let second = core.create(plain_desktop()).await.unwrap();
+        assert_eq!(second.notice, None);
+        assert_eq!(fake.specs.lock().unwrap().last().unwrap().snapshot, spec.snapshot);
+        let builds = fake.execs.lock().unwrap().iter().filter(|(_, c)| c.starts_with("set -e")).count();
+        assert_eq!(builds, 1);
+        let names: Vec<_> = core.backend.list().await.unwrap().into_iter().map(|s| s.name).collect();
+        assert_eq!(names, ["sandbox-1", "sandbox-2"]);
+    }
+
+    #[tokio::test]
+    async fn concurrent_desktops_falling_back_build_once_and_get_their_own_names_and_ports() {
+        let fake = Arc::new(FakeBackend::default());
+        let (core, _dir) = core_in_fresh_dir(fake.clone(), Arc::new(FakeSecrets::default()));
+        fake.failing_images.lock().unwrap().insert(DESKTOP_IMAGE.into());
+        let (a, b) = tokio::join!(core.create(plain_desktop()), core.create(plain_desktop()));
+        let (a, b) = (a.unwrap(), b.unwrap());
+        assert_ne!(a.name, b.name);
+        assert_ne!(a.ports[0].host, b.ports[0].host);
+        assert!(a.notice.is_some() && b.notice.is_some());
+        let builds = fake.execs.lock().unwrap().iter().filter(|(_, c)| c.starts_with("set -e")).count();
+        assert_eq!(builds, 1);
+    }
+
+    #[tokio::test]
+    async fn a_taken_name_is_refused_before_anything_is_pulled_or_built() {
+        let (fake, core) = core_with(|_| true);
+        fake.failing_images.lock().unwrap().insert(DESKTOP_IMAGE.into());
+        core.create(CreateOpts { name: Some("a".into()), ..Default::default() }).await.unwrap();
+        let taken = CreateOpts { name: Some("a".into()), ..plain_desktop() };
+        assert_eq!(core.create(taken).await.unwrap_err(), "sandbox a already exists");
+        assert!(fake.execs.lock().unwrap().is_empty(), "nothing built");
+        assert_eq!(fake.specs.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_desktop_image_tag_follows_the_desktop_snapshot() {
+        let (_, member) = snapshot_key(None, true).unwrap();
+        let (repo, tag) = DESKTOP_IMAGE.rsplit_once(':').unwrap();
+        assert_eq!(repo, "ghcr.io/OWNER/beambox-desktop");
+        assert_eq!(Some(tag), member.rsplit('-').next());
     }
 
     #[test]
     fn snapshot_names_are_group_and_member() {
         assert_eq!(snapshot_name(None, false), None);
-        assert_eq!(snapshot_name(Some("opencode"), true).unwrap(), "beambox-build-opencode-desktop:beambox-opencode-desktop-5");
+        assert_eq!(snapshot_name(Some("opencode"), true).unwrap(), "beambox-build-opencode-desktop:beambox-opencode-desktop-6");
         for (h, d) in [(None, true), (Some("codex"), false)] {
             assert!(snapshot_key(h, d).unwrap().0.starts_with(BUILD_PREFIX));
         }

@@ -133,49 +133,38 @@ fn file(path: &str, body: &str) -> String {
     format!("mkdir -p \"$(dirname {path})\"\ncat > {path} <<'EOF'\n{body}EOF\n")
 }
 
-/// The desktop's files, as (path in the sandbox, contents). See `images/desktop/`.
+/// `images/desktop/` as (path in that folder, contents): `install.sh` and the files it installs. The Dockerfile copies
+/// the same folder.
 const DESKTOP_FILES: &[(&str, &str)] = &[
-    ("/usr/local/bin/start-desktop", include_str!("../../images/desktop/start-desktop")),
-    ("/etc/beambox/Xresources", include_str!("../../images/desktop/Xresources")),
-    ("/usr/share/themes/Beambox/openbox-3/themerc", include_str!("../../images/desktop/openbox/themerc")),
-    ("/usr/share/themes/Beambox/openbox-3/close.xbm", include_str!("../../images/desktop/openbox/close.xbm")),
-    ("/usr/share/themes/Beambox/openbox-3/iconify.xbm", include_str!("../../images/desktop/openbox/iconify.xbm")),
-    ("/usr/share/themes/Beambox/openbox-3/max.xbm", include_str!("../../images/desktop/openbox/max.xbm")),
-    ("/usr/share/themes/Beambox/openbox-3/max_toggled.xbm", include_str!("../../images/desktop/openbox/max_toggled.xbm")),
-    ("/etc/xdg/tint2/tint2rc", include_str!("../../images/desktop/tint2rc")),
-    ("/etc/dconf/profile/user", "user-db:user\nsystem-db:local\n"),
-    ("/etc/dconf/db/local.d/10-plank", include_str!("../../images/desktop/plank.dconf")),
-    ("/usr/share/applications/xterm.desktop", include_str!("../../images/desktop/applications/xterm.desktop")),
-    ("/usr/local/bin/browser", include_str!("../../images/desktop/browser")),
-    ("/etc/chromium.d/beambox", include_str!("../../images/desktop/chromium-flags")),
-    ("/etc/beambox/browser-preferences.json", include_str!("../../images/desktop/browser-preferences.json")),
-    ("/etc/beambox/browser-policies.json", include_str!("../../images/desktop/browser-policies.json")),
+    ("install.sh", include_str!("../../images/desktop/install.sh")),
+    ("beambox-desktop", include_str!("../../images/desktop/beambox-desktop")),
+    ("start-desktop", include_str!("../../images/desktop/start-desktop")),
+    ("Xresources", include_str!("../../images/desktop/Xresources")),
+    ("openbox/themerc", include_str!("../../images/desktop/openbox/themerc")),
+    ("openbox/close.xbm", include_str!("../../images/desktop/openbox/close.xbm")),
+    ("openbox/iconify.xbm", include_str!("../../images/desktop/openbox/iconify.xbm")),
+    ("openbox/max.xbm", include_str!("../../images/desktop/openbox/max.xbm")),
+    ("openbox/max_toggled.xbm", include_str!("../../images/desktop/openbox/max_toggled.xbm")),
+    ("tint2rc", include_str!("../../images/desktop/tint2rc")),
+    ("plank.dconf", include_str!("../../images/desktop/plank.dconf")),
+    ("applications/xterm.desktop", include_str!("../../images/desktop/applications/xterm.desktop")),
+    ("chromium-flags", include_str!("../../images/desktop/chromium-flags")),
+    ("browser-preferences.json", include_str!("../../images/desktop/browser-preferences.json")),
+    ("browser-policies.json", include_str!("../../images/desktop/browser-policies.json")),
 ];
+const DESKTOP_DIR: &str = "/tmp/beambox-desktop";
 
-/// Installs the desktop on Debian: TigerVNC's Xvnc (X server and VNC server in one), openbox with the Beambox
-/// theme, a tint2 top bar, the Plank dock, xterm and a browser (Google Chrome on x86-64, Chromium on arm64, where
-/// Google doesn't ship Chrome). Shared by the Desktop template and agent desktops.
+/// Installs the desktop on Debian the way the image does: writes `images/desktop/` into the sandbox and runs its
+/// `install.sh`. Shared by the Desktop template's local build and agent desktops.
 fn desktop_install() -> String {
-    let apt = "apt-get install -y --no-install-recommends";
-    let files: String = DESKTOP_FILES.iter().map(|(path, body)| file(path, body)).collect();
-    format!(
-        "{apt} tigervnc-standalone-server tigervnc-tools openbox tint2 plank xcompmgr rofi xterm x11-xserver-utils \
-         hsetroot fonts-inter fonts-dejavu-core papirus-icon-theme librsvg2-common dbus-x11 dconf-cli \
-         dconf-gsettings-backend net-tools ca-certificates curl\n\
-         if [ \"$(dpkg --print-architecture)\" = amd64 ]; then\n\
-         curl -fsSLo /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb\n\
-         {apt} /tmp/chrome.deb && rm /tmp/chrome.deb\nelse\n{apt} chromium\nfi\n\
-         {files}{}",
-        include_str!("../../images/desktop/theme.sh"),
-    )
+    let files: String = DESKTOP_FILES.iter().map(|(path, body)| file(&format!("{DESKTOP_DIR}/{path}"), body)).collect();
+    format!("{files}sh {DESKTOP_DIR}/install.sh\nrm -rf {DESKTOP_DIR}\n")
 }
 
-/// Shell script that turns `debian:trixie-slim` into the Desktop template (see `desktop_install`).
+/// Shell script that turns `debian:trixie-slim` into the Desktop template: the local build used when the
+/// desktop image can't be pulled (see `core::DESKTOP_IMAGE`).
 pub fn desktop_setup() -> String {
-    format!(
-        "set -e\nexport DEBIAN_FRONTEND=noninteractive\napt-get update\n{}apt-get clean\nrm -rf /var/lib/apt/lists/*\n",
-        desktop_install()
-    )
+    format!("set -e\n{}", desktop_install())
 }
 
 /// Install the harness and check that it runs. npm skips a platform binary it can't fetch without failing (a new
@@ -324,45 +313,83 @@ mod tests {
             assert!(plain.contains(part), "{part}");
         }
         assert!(!plain.contains("Xvnc") && !plain.contains("chrom"));
+        // Agent desktops run the same install.sh as the Desktop template and the image.
         let desktop = agent_setup(harness("codex").unwrap(), true);
-        for part in ["tigervnc-standalone-server", "openbox", "tint2", "google-chrome-stable_current_amd64.deb", " chromium\n", "Xvnc :0", "<name>Beambox</name>"] {
-            assert!(desktop.contains(part), "{part}");
-        }
+        assert!(desktop.contains(&desktop_install()));
         assert!(desktop.ends_with("rm -rf /var/lib/apt/lists/*\n"));
     }
 
+    /// The files in `images/desktop/` (what the Dockerfile copies), relative to it, without the Dockerfile.
+    fn desktop_folder() -> Vec<String> {
+        fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(root, &path, out);
+                } else {
+                    out.push(path.strip_prefix(root).unwrap().to_string_lossy().into_owned());
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../images/desktop");
+        let mut files = vec![];
+        walk(&root, &root, &mut files);
+        files.retain(|f| f != "Dockerfile");
+        files.sort();
+        files
+    }
+
     #[test]
-    fn desktop_setup_installs_the_start_script() {
+    fn the_snapshot_build_runs_install_sh_with_every_file_beside_it() {
+        let mut embedded: Vec<String> = DESKTOP_FILES.iter().map(|(path, _)| path.to_string()).collect();
+        embedded.sort();
+        assert_eq!(embedded, desktop_folder());
         let script = desktop_setup();
-        assert!(script.starts_with("set -e\nexport DEBIAN_FRONTEND=noninteractive\napt-get update\n"));
-        assert!(script.contains("cat > /usr/local/bin/start-desktop <<'EOF'\n#!/bin/sh\n"));
-        assert!(script.contains("Xvnc :0 -geometry 1280x800"));
-        assert!(script.contains("cat > /etc/beambox/Xresources <<'EOF'\n"));
-        assert!(script.ends_with("rm -rf /var/lib/apt/lists/*\n"));
+        assert!(script.starts_with("set -e\n"));
+        assert!(script.contains("cat > /tmp/beambox-desktop/install.sh <<'EOF'\n#!/bin/sh\n"));
+        assert!(script.contains("cat > /tmp/beambox-desktop/openbox/themerc <<'EOF'\n"));
+        assert!(script.ends_with("sh /tmp/beambox-desktop/install.sh\nrm -rf /tmp/beambox-desktop\n"));
         // Every embedded file ends in a newline, so its EOF marker stands on a line of its own.
         assert_eq!(script.matches("\nEOF\n").count(), DESKTOP_FILES.len());
         assert!(DESKTOP_FILES.iter().all(|(_, body)| body.ends_with('\n')));
     }
 
     #[test]
-    fn the_desktop_looks_like_macos_and_its_browser_runs_as_root() {
-        let script = desktop_setup();
-        // Traffic-light buttons on the left, a top bar, a dock with the browser and terminal, an app launcher.
-        assert!(script.contains("<titleLayout>CIML</titleLayout>"));
-        for part in ["plank", "tint2", "rofi", "fonts-inter", "papirus-icon-theme", "librsvg2-common", "dconf-gsettings-backend"] {
-            assert!(script.contains(part), "{part}");
+    fn install_sh_installs_chromium_and_never_google_chrome() {
+        let install = include_str!("../../images/desktop/install.sh");
+        assert!(install.contains(" chromium \\\n") || install.contains(" chromium\n"), "{install}");
+        assert!(install.contains("/etc/chromium/policies/managed/beambox.json"));
+        assert!(install.contains("/etc/chromium/master_preferences"));
+        for (path, body) in DESKTOP_FILES {
+            let body = body.to_lowercase();
+            assert!(!body.contains("google-chrome") && !body.contains("dl.google.com"), "{path}");
         }
-        assert!(script.contains("dock-items=['browser.dockitem', 'terminal.dockitem']"));
-        assert!(script.contains("hide-mode='none'"));
-        // Everything runs as root, where Chromium and Chrome refuse to start with their own sandbox on.
-        assert!(script.contains("export CHROMIUM_FLAGS=\"$CHROMIUM_FLAGS --no-sandbox --test-type\""));
-        assert!(script.contains("Exec=/usr/bin/google-chrome-stable --no-sandbox --test-type"));
-        assert!(script.contains("\"custom_chrome_frame\": false"));
-        assert!(script.contains("\"BrowserSignin\": 0"));
+    }
+
+    #[test]
+    fn the_desktop_looks_like_macos_and_its_browser_runs_as_root() {
+        let install = include_str!("../../images/desktop/install.sh");
+        // Traffic-light buttons on the left, a top bar, a dock with the browser and terminal, an app launcher.
+        assert!(install.contains("<titleLayout>CIML</titleLayout>"));
+        for part in ["plank", "tint2", "rofi", "fonts-inter", "papirus-icon-theme", "librsvg2-common", "dconf-gsettings-backend"] {
+            assert!(install.contains(part), "{part}");
+        }
+        let plank = include_str!("../../images/desktop/plank.dconf");
+        assert!(plank.contains("dock-items=['browser.dockitem', 'terminal.dockitem']"));
+        assert!(plank.contains("hide-mode='none'"));
+        assert!(install.contains("Launcher=file:///usr/share/applications/chromium.desktop"));
+        // Everything runs as root, where Chromium refuses to start with its own sandbox on.
+        assert!(include_str!("../../images/desktop/chromium-flags").contains("export CHROMIUM_FLAGS=\"$CHROMIUM_FLAGS --no-sandbox --test-type\""));
+        assert!(include_str!("../../images/desktop/browser-preferences.json").contains("\"custom_chrome_frame\": false"));
+        assert!(include_str!("../../images/desktop/browser-policies.json").contains("\"BrowserSignin\": 0"));
         let start = include_str!("../../images/desktop/start-desktop");
-        for part in ["xcompmgr", "tint2 -c /etc/xdg/tint2/tint2rc", "dbus-launch --exit-with-session plank"] {
+        for part in ["Xvnc :0 -geometry 1280x800", "xcompmgr", "tint2 -c /etc/xdg/tint2/tint2rc", "dbus-launch --exit-with-session plank"] {
             assert!(start.contains(part), "{part}");
         }
+        // The image's CMD starts the same desktop, then stays in the foreground while Xvnc runs.
+        let foreground = include_str!("../../images/desktop/beambox-desktop");
+        assert!(foreground.contains("start-desktop\n") && foreground.contains("while pgrep Xvnc"), "{foreground}");
+        assert!(install.contains("/usr/local/bin/beambox-desktop"));
     }
 
     #[test]

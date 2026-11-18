@@ -13,6 +13,8 @@ export type Sandbox = {
   /** The agent harness running in it, for agent sandboxes. */
   harness: string | null;
   ports: Port[];
+  /** Set by create when there's something to know, such as the desktop being built locally. */
+  notice?: string;
 };
 export type Harness = "claude-code" | "codex" | "opencode";
 /** Everything left out gets the Rust core's default (base, 1 vCPU, 256 MiB, auto name, public network). */

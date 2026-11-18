@@ -100,6 +100,11 @@ export function App({ api }: { api: Api }) {
           (s) => `${s.name} is ready`,
           "Couldn't start the desktop",
         );
+      // Such as: the desktop image couldn't be downloaded, so the desktop was built locally.
+      void call.then(
+        (s) => s.notice && toast.warning(s.notice),
+        () => {},
+      );
       run(call);
     },
     start: (name) => {

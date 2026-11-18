@@ -1,0 +1,10 @@
+#!/bin/sh
+# The image's CMD: start the desktop (VNC on port 5900, no password), then stay in the foreground while Xvnc runs.
+start-desktop
+trap 'exit 0' INT TERM
+while pgrep Xvnc >/dev/null; do
+  sleep 2 &
+  wait $!
+done
+echo "Xvnc exited; see /tmp/xvnc.log" >&2
+exit 1

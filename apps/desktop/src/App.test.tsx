@@ -92,6 +92,20 @@ describe("home", () => {
     expect(await screen.findByText("sandbox-1 is ready")).toBeInTheDocument();
   });
 
+  it("says when the desktop image couldn't be downloaded and was built locally", async () => {
+    const api = fakeApi();
+    const notice =
+      "Couldn't download ghcr.io/OWNER/beambox-desktop:5, so Beambox built the desktop on this computer.";
+    // A name of its own: sonner's toast store outlives each render.
+    api.create = vi.fn(async () => sandbox({ name: "desk-9", template: "desktop", notice }));
+    render(<App api={api} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Sandbox options" }));
+    await userEvent.click(screen.getByRole("switch", { name: "Desktop" }));
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+    expect(await screen.findByText("desk-9 is ready")).toBeInTheDocument();
+    expect(await screen.findByText(notice)).toBeInTheDocument();
+  });
+
   it("creates an agent sandbox with a harness, a task and a desktop", async () => {
     const api = fakeApi();
     render(<App api={api} />);

@@ -1,12 +1,12 @@
 ---
-status: approved      # draft | approved | built | shipped
+status: built      # draft | approved | built | shipped
 size: large
 created: 2026-11-18T00:10Z
 shipped:
 diff:
 new_deps: 0
 bounces: 0
-review_findings: 0
+review_findings: 5
 ---
 
 # Desktop image: the Beambox desktop as a standard OCI image
@@ -80,6 +80,26 @@ Desktop sandbox spends ~1.5 min installing packages from Debian on the user's ma
   publish the port on `127.0.0.1` only (`-p 127.0.0.1:5900:5900`).
 - No GitHub repo exists yet. Everything uses `OWNER`, and I add the remote and push only when you give me the name
   and say so.
+- Built (by /build):
+  - This change itself edits `images/desktop/`, so by the rule above the first image is version **5**:
+    `DESKTOP_IMAGE` = `ghcr.io/OWNER/beambox-desktop:5`, desktop member `beambox-desktop-5`, first tag `desktop-v5`.
+    Agent desktop members go to `-6`. Plain agent members stay at `-5`, because their setup didn't change.
+  - `theme.sh` and the `browser` wrapper are folded into `install.sh`. The menu and dock launch `chromium`
+    directly: Debian's wrapper already reads `/etc/chromium.d/beambox` for `--no-sandbox`. `install.sh` does its
+    own `apt-get update` and clean, and adds `procps`, because `start-desktop` and `beambox-desktop` use `pgrep`.
+  - The workflow's push condition sits in buildx's `outputs` (`push-by-digest=true,name-canonical=true,push=${{
+    startsWith(github.ref, 'refs/tags/desktop-v') }}`), the documented way to push by digest. Login, digest upload
+    and the merge job have the same `if:`.
+  - The fallback notice travels as an optional `notice` field on the created sandbox. The app shows it as a warning
+    toast, and the CLI prints it to stderr. A plain desktop no longer prints "Preparing the desktop" up front,
+    because whether the image is cached isn't known.
+  - A name that's already taken is refused before any pull or build. Names and ports are reserved under a short
+    lock and held as pending, so booting and pulling run unlocked and don't block other creates.
+  - Only creating the sandbox itself falls back, after deleting whatever the failed attempt left. Once the local
+    desktop snapshot exists, desktops boot from it without asking the registry. It's the same desktop at the same
+    version, and this avoids a registry timeout on every desktop while offline.
+  - `vnc-frame.mjs` retries (up to `--wait`) until a frame is at least `--min`% non-black, because the background
+    is drawn a moment after VNC starts listening.
 
 ## Out of scope
 - Images for agent desktops (Claude Code, Codex, OpenCode).

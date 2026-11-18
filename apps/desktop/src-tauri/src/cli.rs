@@ -234,13 +234,11 @@ pub async fn run(cli: &Cli, core: &Core, io: &mut Io<'_>) -> Result<i32> {
                 None => None,
             };
             let with_desktop = *desktop || template.as_deref() == Some("desktop");
-            if let Some(snapshot) = snapshot_name(harness.as_deref(), with_desktop) {
+            // Agent sandboxes build their snapshot on first use. A plain desktop is pulled from its image instead
+            // (and says so below if it had to be built here).
+            if let (Some(h), Some(snapshot)) = (harness, snapshot_name(harness.as_deref(), with_desktop)) {
                 if !core.backend.has_snapshot(&snapshot).await? {
-                    let (what, time) = match harness {
-                        Some(h) => (format!("the {h} sandbox"), "a few minutes"),
-                        None => ("the desktop".into(), "about 2 minutes"),
-                    };
-                    writeln!(io.stderr, "Preparing {what}. This takes {time}, once.").map_err(io_err)?;
+                    writeln!(io.stderr, "Preparing the {h} sandbox. This takes a few minutes, once.").map_err(io_err)?;
                 }
             }
             let opts = CreateOpts {
@@ -257,6 +255,9 @@ pub async fn run(cli: &Cli, core: &Core, io: &mut Io<'_>) -> Result<i32> {
             };
             let info = core.create(opts).await?;
             if cli.json { json(io, &info)? } else { done(io, describe(&info))? }
+            if let Some(notice) = &info.notice {
+                writeln!(io.stderr, "{notice}").map_err(io_err)?;
+            }
             // Neither a stored key nor a saved login: the harness signs in inside the sandbox, so say where.
             let sign_in = match harness {
                 Some(h) if !core.missing_credentials(h)?.is_empty() => Some(h),
@@ -773,10 +774,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_first_desktop_says_it_is_preparing_and_later_ones_do_not() {
-        let core = core();
-        assert!(beambox(&core, "create d1 -t desktop", "").await.stderr.contains("Preparing the desktop"));
-        assert_eq!(beambox(&core, "create d2 -t desktop", "").await.stderr, "");
+    async fn a_desktop_from_the_image_says_nothing_and_one_built_locally_says_so() {
+        let fake = Arc::new(FakeBackend::default());
+        let core = Core::with_port_probe(fake.clone(), Arc::new(FakeSecrets::default()), |_| true);
+        assert_eq!(beambox(&core, "create d1 -t desktop", "").await.stderr, "");
+        fake.failing_images.lock().unwrap().insert(crate::core::DESKTOP_IMAGE.into());
+        let out = beambox(&core, "create d2 -t desktop", "").await;
+        assert_eq!(out.code, Ok(0), "{}", out.stderr);
+        assert!(out.stderr.contains("so Beambox built the desktop on this computer"), "{}", out.stderr);
+        assert!(out.stdout.contains("d2"), "{}", out.stdout);
     }
 
     #[tokio::test]

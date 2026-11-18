@@ -48,6 +48,9 @@ pub struct SandboxInfo {
     pub memory_mib: u32,
     pub harness: Option<String>,
     pub ports: Vec<Port>,
+    /// Something the person creating it should know, such as the desktop being built locally.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -113,6 +116,8 @@ pub mod fake {
         pub envs: Mutex<Vec<(String, Vec<(String, String)>)>>,
         /// Canned results for exact commands, for commands the `echo` interpreter can't fake.
         pub replies: Mutex<BTreeMap<String, ExecResult>>,
+        /// Images that can't be pulled: creating from one fails, like a registry that's down.
+        pub failing_images: Mutex<BTreeSet<String>>,
     }
 
     impl FakeBackend {
@@ -131,10 +136,14 @@ pub mod fake {
             }
             // Like a real boot, give other tasks a turn, so concurrent creates really interleave.
             tokio::task::yield_now().await;
-            if let Some(snapshot) = &spec.snapshot {
-                if !self.snapshots.lock().unwrap().contains(snapshot) {
+            match &spec.snapshot {
+                Some(snapshot) if !self.snapshots.lock().unwrap().contains(snapshot) => {
                     return Err(format!("snapshot not found: {snapshot}"));
                 }
+                None if self.failing_images.lock().unwrap().contains(&spec.image) => {
+                    return Err(format!("pulling {}: registry unreachable", spec.image));
+                }
+                _ => {}
             }
             let info = SandboxInfo {
                 name: spec.name.clone(),
@@ -144,6 +153,7 @@ pub mod fake {
                 memory_mib: spec.memory_mib,
                 harness: spec.harness.clone(),
                 ports: spec.ports.clone(),
+                notice: None,
             };
             self.specs.lock().unwrap().push(spec);
             self.sandboxes.lock().unwrap().insert(info.name.clone(), info.clone());
