@@ -1,6 +1,7 @@
 #!/bin/sh
 # Beambox runs this after every boot. Starts the desktop in the background and returns once VNC is listening.
-export DISPLAY=:0 XENVIRONMENT=/etc/beambox/Xresources
+# A UTF-8 locale (built into glibc), so xterm and tmux draw the bullets, arrows and box lines agents print.
+export DISPLAY=:0 XENVIRONMENT=/etc/beambox/Xresources LANG=C.UTF-8
 # The desktop in a browser, opt-in: noVNC on WEB_PORT (or the port in /etc/beambox/web-port, which Beambox writes so
 # it lasts across restarts), through websockify to VNC. websockify doesn't check which site a connection comes
 # from, so any open web page could reach a passwordless desktop on localhost. It only connects requests that carry

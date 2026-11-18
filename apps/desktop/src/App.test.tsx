@@ -49,6 +49,7 @@ function fakeApi(sandboxes: Sandbox[] = [], hypervisor: Hypervisor = { state: "o
     takeOpen: vi.fn(async () => null),
     onOpen: vi.fn(() => () => {}),
     desktopPort: vi.fn(async () => 6080),
+    desktopResize: vi.fn(async () => {}),
     terminalOpen: vi.fn(async () => 1),
     terminalInput: vi.fn(async () => {}),
     terminalResize: vi.fn(async () => {}),

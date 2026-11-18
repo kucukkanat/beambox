@@ -16,7 +16,7 @@ pub const TEMPLATES: &[(&str, &str, u32, &[u16])] = &[
 /// The Desktop template's image: `packages/desktop-image/image/` on Debian, built and published by
 /// `.github/workflows/desktop-image.yml`. Its tag follows the desktop snapshot's member (`snapshot_key`): bump
 /// both when `packages/desktop-image/image/` changes.
-pub const DESKTOP_IMAGE: &str = "ghcr.io/OWNER/beambox-desktop:8";
+pub const DESKTOP_IMAGE: &str = "ghcr.io/OWNER/beambox-desktop:9";
 pub const VNC_PORT: u16 = 5900;
 /// The guest port of the desktop in a browser (`CreateOpts::web`, start-desktop's web desktop).
 pub const WEB_PORT: u16 = 6080;
@@ -30,9 +30,9 @@ pub const BUILD_PREFIX: &str = "beambox-build-";
 pub fn snapshot_key(harness: Option<&str>, desktop: bool) -> Option<(String, String)> {
     match (harness, desktop) {
         (None, false) => None,
-        (None, true) => Some(("beambox-build-desktop".into(), "beambox-desktop-8".into())),
+        (None, true) => Some(("beambox-build-desktop".into(), "beambox-desktop-9".into())),
         (Some(h), false) => Some((format!("{BUILD_PREFIX}{h}"), format!("beambox-{h}-5"))),
-        (Some(h), true) => Some((format!("{BUILD_PREFIX}{h}-desktop"), format!("beambox-{h}-desktop-10"))),
+        (Some(h), true) => Some((format!("{BUILD_PREFIX}{h}-desktop"), format!("beambox-{h}-desktop-11"))),
     }
 }
 
@@ -430,6 +430,16 @@ impl Core {
         self.start_agent(info, harness, None, env).await
     }
 
+    /// Set the desktop's screen to `width`x`height`, one of the sizes Xvnc lists in `xrandr` (1920x1080 and the
+    /// like). The Desktop tab then scales it to fit, instead of resizing the screen to the window.
+    pub async fn resize_desktop(&self, name: &str, width: u32, height: u32) -> Result<()> {
+        let out = self.backend.exec(name, &format!("DISPLAY=:0 xrandr -s {width}x{height}")).await?;
+        if out.exit_code != 0 {
+            return Err(format!("couldn't set the desktop to {width}x{height}: {}", out.stderr.trim()));
+        }
+        Ok(())
+    }
+
     /// Delete Beambox's own snapshots from earlier versions: each version bump builds new ones and leaves the old
     /// ones (about 4 GiB each) behind. Sandboxes made from them keep working, as their disks are their own. Returns
     /// what was deleted. A snapshot that can't go yet (say, the head of a group whose other members go later in the
@@ -798,7 +808,7 @@ mod tests {
         let info = core.create(opts).await.unwrap();
         assert_eq!((info.template.as_str(), info.memory_mib), ("desktop", 4096));
         let spec = fake.specs.lock().unwrap().last().unwrap().clone();
-        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-10"));
+        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-11"));
     }
 
     #[tokio::test]
@@ -821,7 +831,7 @@ mod tests {
         let specs = fake.specs.lock().unwrap().clone();
         let snapshot = |name: &str| specs.iter().find(|s| s.name == name).unwrap().snapshot.clone().unwrap();
         assert_eq!(snapshot("a"), snapshot("b"));
-        assert_eq!(snapshot("c"), "beambox-build-codex-desktop:beambox-codex-desktop-10");
+        assert_eq!(snapshot("c"), "beambox-build-codex-desktop:beambox-codex-desktop-11");
         let c = specs.iter().find(|s| s.name == "c").unwrap();
         assert_eq!((c.memory_mib, c.ports.len(), c.template.as_str()), (4096, 1, "desktop"));
         let names: Vec<_> = core.backend.list().await.unwrap().into_iter().map(|s| s.name).collect();
@@ -853,7 +863,7 @@ mod tests {
         assert!(!notice.contains("registry unreachable"), "{notice}");
         assert_eq!((info.name.as_str(), info.ports.as_slice()), ("sandbox-1", &[Port { guest: VNC_PORT, host: VNC_PORT }][..]));
         let spec = fake.specs.lock().unwrap().last().unwrap().clone();
-        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-desktop:beambox-desktop-8"));
+        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-desktop:beambox-desktop-9"));
         assert_eq!((spec.template.as_str(), spec.memory_mib), ("desktop", 4096));
         // The next one boots from that snapshot straight away: the same desktop, without asking the registry again.
         let second = core.create(plain_desktop()).await.unwrap();
@@ -926,7 +936,7 @@ mod tests {
         assert_eq!(image, agent::IMAGE);
         assert!(script.contains("sh /tmp/beambox-desktop/install.sh"));
         let spec = fake.specs.lock().unwrap().last().unwrap().clone();
-        assert_eq!((spec.name, spec.snapshot.as_deref()), (info.name, Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-10")));
+        assert_eq!((spec.name, spec.snapshot.as_deref()), (info.name, Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-11")));
     }
 
     #[test]
@@ -940,7 +950,7 @@ mod tests {
     #[test]
     fn snapshot_names_are_group_and_member() {
         assert_eq!(snapshot_name(None, false), None);
-        assert_eq!(snapshot_name(Some("opencode"), true).unwrap(), "beambox-build-opencode-desktop:beambox-opencode-desktop-10");
+        assert_eq!(snapshot_name(Some("opencode"), true).unwrap(), "beambox-build-opencode-desktop:beambox-opencode-desktop-11");
         for (h, d) in [(None, true), (Some("codex"), false)] {
             assert!(snapshot_key(h, d).unwrap().0.starts_with(BUILD_PREFIX));
         }
@@ -999,6 +1009,17 @@ mod tests {
         assert_eq!(core.agent_status("a").await.unwrap(), "frozen");
         fake.replies.lock().unwrap().insert(takeover_probe(), reply("S\n"));
         assert_eq!(core.agent_status("a").await.unwrap(), "running");
+    }
+
+    #[tokio::test]
+    async fn resizing_the_desktop_picks_an_xvnc_screen_size() {
+        let (fake, core) = core_with(|_| true);
+        core.create(CreateOpts { name: Some("d".into()), desktop: Some(true), ..Default::default() }).await.unwrap();
+        core.resize_desktop("d", 1920, 1080).await.unwrap();
+        assert_eq!(fake.execs.lock().unwrap().last().unwrap().1, "DISPLAY=:0 xrandr -s 1920x1080");
+        // xrandr's own error reaches the person.
+        fake.replies.lock().unwrap().insert("DISPLAY=:0 xrandr -s 1x1".into(), ExecResult { stdout: String::new(), stderr: "Size 1x1 not found\n".into(), exit_code: 1 });
+        assert_eq!(core.resize_desktop("d", 1, 1).await.unwrap_err(), "couldn't set the desktop to 1x1: Size 1x1 not found");
     }
 
     #[tokio::test]

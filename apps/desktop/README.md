@@ -35,7 +35,10 @@ Beambox desktop: a Tauri 2 app that gives each AI agent its own computer, a micr
 - **CLI**: the same `beambox` binary run with a command. Everything the window does, from a terminal (see
   [Command line](#command-line)).
 - **Desktop tab**: noVNC connects to a per-sandbox proxy on 127.0.0.1 that only accepts the app's own webview
-  origin, so other pages on the machine can't reach the VNC server.
+  origin, so other pages on the machine can't reach the VNC server. The Resolution menu in its top-right corner
+  picks **Fit window** (the screen follows the tab, drawn 1:1) or a fixed size from Xvnc's list (`xrandr -s` through
+  the `desktop_resize` command), scaled down to fit so everything looks smaller. The choice is kept, and applied
+  again on every connect.
 
 ## Layout
 
@@ -147,9 +150,9 @@ doesn't wait for GUI-subsystem programs, so output can land after the next promp
 
   | Kind | Base image | Setup | Snapshot | First build |
   | --- | --- | --- | --- | --- |
-  | Desktop (plain) | `DESKTOP_IMAGE`, pulled; `debian:trixie-slim` if that fails | `desktop_setup()` (fallback only) | `beambox-build-desktop:beambox-desktop-8` (fallback only) | a pull; ~1.5 min built |
+  | Desktop (plain) | `DESKTOP_IMAGE`, pulled; `debian:trixie-slim` if that fails | `desktop_setup()` (fallback only) | `beambox-build-desktop:beambox-desktop-9` (fallback only) | a pull; ~1.5 min built |
   | Agent | `debian:trixie-slim` | `agent_setup(h, false)` + `mcp.js` + MCP config | `beambox-build-<h>:beambox-<h>-5` | ~40 s |
-  | Agent + desktop | `DESKTOP_IMAGE`; `debian:trixie-slim` if it can't be pulled | `agent_setup(h, false)` (`agent_setup(h, true)` on Debian) + the same files | `beambox-build-<h>-desktop:beambox-<h>-desktop-10` | ~1 min on the image, ~2 min on Debian |
+  | Agent + desktop | `DESKTOP_IMAGE`; `debian:trixie-slim` if it can't be pulled | `agent_setup(h, false)` (`agent_setup(h, true)` on Debian) + the same files | `beambox-build-<h>-desktop:beambox-<h>-desktop-11` | ~1 min on the image, ~2 min on Debian |
 
   Agent snapshots get Node 24 (NodeSource), the harness from npm (`@anthropic-ai/claude-code`, `@openai/codex`,
   `opencode-ai`; latest at build time), tmux, git, curl, `/opt/beambox/mcp.js` and the harness's MCP config
@@ -174,7 +177,7 @@ code embeds that folder (`DESKTOP_FILES` in `agent.rs`), so the app and the imag
 
 - **Desktop sandboxes** are created from `DESKTOP_IMAGE` (`core.rs`). microsandbox pulls it anonymously once, and
   later desktops reuse the cached layers. If creating from it fails (offline, registry down, not published yet),
-  Beambox deletes what the attempt left, builds the `beambox-build-desktop:beambox-desktop-8` snapshot by running
+  Beambox deletes what the attempt left, builds the `beambox-build-desktop:beambox-desktop-9` snapshot by running
   the package's `install.sh` on `debian:trixie-slim` (~1.5 min, once), and says so in a toast or on the CLI's
   stderr (the registry's own error goes to stderr only). Once that snapshot exists, desktops boot from it without asking the registry until the version is
   bumped. Pulling runs outside the lock that picks names and ports, so other creates aren't held up.
