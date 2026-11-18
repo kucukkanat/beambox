@@ -1,3 +1,6 @@
 # Debian's chromium wrapper reads this. The sandbox runs as root, and Chromium won't start as root with its own
 # sandbox on; the microVM is the isolation, so it's off. --test-type hides the "unsupported flag" warning.
-export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-sandbox --test-type"
+# There's no GPU, and Xvnc's software OpenGL can't give Chromium a WebGL context, so WebGL is drawn by Chromium's own
+# SwiftShader on the CPU. Chromium only allows that for web pages with --enable-unsafe-swiftshader ("unsafe" because
+# it compiles page shaders outside a sandbox, which is off already).
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-sandbox --test-type --use-angle=swiftshader --enable-unsafe-swiftshader"

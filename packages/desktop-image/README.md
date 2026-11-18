@@ -96,6 +96,9 @@ One consequence: a release that changes only files keeps the Debian packages it 
 - **The browser: Debian's Chromium** on both architectures. Google Chrome's terms don't allow redistributing it in
   an image.
   - `--no-sandbox` (`chromium-flags`), because Chromium won't start as root with its own sandbox.
+  - WebGL through Chromium's SwiftShader on the CPU (`--use-angle=swiftshader --enable-unsafe-swiftshader`). There's
+    no GPU, and Xvnc's software OpenGL can't give Chromium a WebGL context. It works the same on every host, but is
+    slow: heavy 3D pages want more vCPUs.
   - The system title bar (`browser-preferences.json`).
   - No sign-in, sync or bookmarks bar (`browser-policies.json`). The `BrowserSignin: 0` policy is used instead of
     `--no-first-run`, which would skip the title bar setting.

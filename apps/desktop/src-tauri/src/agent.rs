@@ -400,7 +400,7 @@ mod tests {
         assert!(plank.contains("hide-mode='none'"));
         assert!(install.contains("Launcher=file:///usr/share/applications/chromium.desktop"));
         // Everything runs as root, where Chromium refuses to start with its own sandbox on.
-        assert!(include_str!("../../../../packages/desktop-image/image/chromium-flags").contains("export CHROMIUM_FLAGS=\"$CHROMIUM_FLAGS --no-sandbox --test-type\""));
+        assert!(include_str!("../../../../packages/desktop-image/image/chromium-flags").contains("export CHROMIUM_FLAGS=\"$CHROMIUM_FLAGS --no-sandbox --test-type --use-angle=swiftshader --enable-unsafe-swiftshader\""));
         assert!(include_str!("../../../../packages/desktop-image/image/browser-preferences.json").contains("\"custom_chrome_frame\": false"));
         assert!(include_str!("../../../../packages/desktop-image/image/browser-policies.json").contains("\"BrowserSignin\": 0"));
         let start = include_str!("../../../../packages/desktop-image/image/start-desktop");
