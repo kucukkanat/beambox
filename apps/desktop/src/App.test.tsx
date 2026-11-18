@@ -36,6 +36,7 @@ function fakeApi(sandboxes: Sandbox[] = [], hypervisor: Hypervisor = { state: "o
     takeover: vi.fn(async () => false),
     setTakeover: vi.fn(async () => {}),
     agentStatus: vi.fn(async () => "running" as const),
+    baseReady: vi.fn(async () => true),
     restartAgent: vi.fn(async () => {}),
     pickFolder: vi.fn(async () => "/Users/me/project"),
     credentials: vi.fn(async () => ["openai"]),
@@ -96,18 +97,18 @@ describe("home", () => {
     expect(await screen.findByText("sandbox-1 is ready")).toBeInTheDocument();
   });
 
-  it("says when the desktop image couldn't be downloaded and was built locally", async () => {
+  it("says nothing about a wait once the base snapshot is built", async () => {
     const api = fakeApi();
-    const notice =
-      "Couldn't download ghcr.io/OWNER/beambox-desktop:6, so Beambox built the desktop on this computer.";
-    // A name of its own: sonner's toast store outlives each render.
-    api.create = vi.fn(async () => sandbox({ name: "desk-9", template: "desktop", notice }));
+    let finish = (_: Sandbox) => {};
+    api.create = vi.fn(() => new Promise<Sandbox>((resolve) => (finish = resolve)));
     render(<App api={api} />);
     await userEvent.click(await screen.findByRole("button", { name: "Sandbox options" }));
-    await userEvent.click(screen.getByRole("switch", { name: "Desktop" }));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Harness" }), "opencode");
     await userEvent.click(screen.getByRole("button", { name: "Create" }));
-    expect(await screen.findByText("desk-9 is ready")).toBeInTheDocument();
-    expect(await screen.findByText(notice)).toBeInTheDocument();
+    expect(await screen.findByText(/Starting opencode… · 0:0/)).toBeInTheDocument();
+    expect(screen.queryByText(/preparing Beambox/)).not.toBeInTheDocument();
+    await act(async () => finish(sandbox({ name: "op-3", harness: "opencode" })));
+    expect(await screen.findByText("op-3 is ready")).toBeInTheDocument();
   });
 
   it("creates an agent sandbox with a harness, a task and a desktop", async () => {
@@ -184,9 +185,10 @@ describe("home", () => {
     expect(card).toHaveTextContent(/CPU –\s*● Memory –/);
   });
 
-  it("counts the seconds while a first agent build runs, so it doesn't look stuck", async () => {
+  it("counts the seconds while the base snapshot is built, so it doesn't look stuck", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const api = fakeApi();
+    api.baseReady = vi.fn(async () => false);
     let finish = (_: Sandbox) => {};
     api.create = vi.fn(() => new Promise<Sandbox>((resolve) => (finish = resolve)));
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
@@ -198,7 +200,7 @@ describe("home", () => {
     await act(() => vi.advanceTimersByTimeAsync(65_000));
     expect(
       await screen.findByText(
-        /Starting codex with a desktop… the first one takes about 2 minutes · 1:0[5-9]/,
+        /Starting codex with a desktop… preparing Beambox first, which takes a few minutes, once · 1:0[5-9]/,
       ),
     ).toBeInTheDocument();
     await act(async () => finish(sandbox({ name: "sandbox-7", harness: "codex" })));

@@ -1,7 +1,7 @@
 //! `beambox <command>`: the command line, over the same core as the GUI.
 use crate::agent::sh_quote;
 use crate::backend::{Result, SandboxInfo};
-use crate::core::{Core, CreateOpts, snapshot_name};
+use crate::core::{Core, CreateOpts};
 use crate::credentials;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::io::{Read, Write};
@@ -236,13 +236,9 @@ pub async fn run(cli: &Cli, core: &Core, io: &mut Io<'_>) -> Result<i32> {
                 Some(folder) => Some(std::path::absolute(folder).map_err(io_err)?.to_string_lossy().into_owned()),
                 None => None,
             };
-            let with_desktop = *desktop || template.as_deref() == Some("desktop");
-            // Agent sandboxes build their snapshot on first use. A plain desktop is pulled from its image instead
-            // (and says so below if it had to be built here).
-            if let (Some(h), Some(snapshot)) = (harness, snapshot_name(harness.as_deref(), with_desktop)) {
-                if !core.backend.has_snapshot(&snapshot).await? {
-                    writeln!(io.stderr, "Preparing the {h} sandbox. This takes a few minutes, once.").map_err(io_err)?;
-                }
+            // The first sandbox builds the base snapshot every sandbox boots from (the app builds it at startup).
+            if !core.base_ready().await? {
+                writeln!(io.stderr, "Preparing Beambox's base sandbox. This takes a few minutes, once.").map_err(io_err)?;
             }
             let opts = CreateOpts {
                 name: name.clone(),
@@ -261,9 +257,6 @@ pub async fn run(cli: &Cli, core: &Core, io: &mut Io<'_>) -> Result<i32> {
             if cli.json { json(io, &info)? } else { done(io, describe(&info))? }
             if let (Some(url), false) = (&info.web_url, cli.json) {
                 writeln!(io.stdout, "The desktop in a browser: {url}").map_err(io_err)?;
-            }
-            if let Some(notice) = &info.notice {
-                writeln!(io.stderr, "{notice}").map_err(io_err)?;
             }
             // Neither a stored key nor a saved login: the harness signs in inside the sandbox, so say where.
             let sign_in = match harness {
@@ -775,7 +768,7 @@ mod tests {
         let core = Core::with_port_probe(fake.clone(), Arc::new(FakeSecrets::default()), |_| true);
         let out = beambox(&core, "create big --cpus 4 --memory 2048 --network none --mount .", "").await;
         assert_eq!(out.code, Ok(0), "{}", out.stderr);
-        let spec = fake.specs.lock().unwrap()[0].clone();
+        let spec = fake.specs.lock().unwrap().last().unwrap().clone();
         assert_eq!((spec.cpus, spec.memory_mib, spec.network.as_str()), (4, 2048, "none"));
         let mount = PathBuf::from(spec.mount.unwrap());
         assert!(mount.is_absolute() && mount == std::env::current_dir().unwrap(), "{mount:?}");
@@ -791,15 +784,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_desktop_from_the_image_says_nothing_and_one_built_locally_says_so() {
-        let fake = Arc::new(FakeBackend::default());
-        let core = Core::with_port_probe(fake.clone(), Arc::new(FakeSecrets::default()), |_| true);
-        assert_eq!(beambox(&core, "create d1 -t desktop", "").await.stderr, "");
-        fake.failing_images.lock().unwrap().insert(crate::core::DESKTOP_IMAGE.into());
-        let out = beambox(&core, "create d2 -t desktop", "").await;
+    async fn only_the_first_create_says_it_prepares_the_base_sandbox() {
+        let core = core();
+        let out = beambox(&core, "create d1 -t desktop", "").await;
         assert_eq!(out.code, Ok(0), "{}", out.stderr);
-        assert!(out.stderr.contains("so Beambox built it on this computer"), "{}", out.stderr);
-        assert!(out.stdout.contains("d2"), "{}", out.stdout);
+        assert!(out.stderr.contains("Preparing Beambox's base sandbox"), "{}", out.stderr);
+        assert_eq!(beambox(&core, "create d2 -t desktop", "").await.stderr, "");
     }
 
     #[tokio::test]

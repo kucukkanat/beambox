@@ -4,9 +4,10 @@ The Beambox desktop as a container image: a macOS-like Linux desktop over VNC (o
 Chromium, plus a file manager) on `debian:trixie-slim`, for `linux/amd64` and `linux/arm64`. It is published as
 `ghcr.io/OWNER/beambox-desktop` (`OWNER` stays a placeholder until the GitHub repository exists).
 
-Beambox ([`apps/desktop`](../../apps/desktop)) builds on it. Desktop sandboxes boot from the image, and agent
-desktops are the image plus an agent. When the image can't be pulled, Beambox runs this package's `install.sh` on
-Debian itself, so there's one definition of the desktop either way.
+Beambox ([`apps/desktop`](../../apps/desktop)) doesn't pull the image; it runs the same `install.sh` in two steps.
+Its one base snapshot runs `install.sh packages` once, and each new desktop runs `install.sh files`, so changing
+a file here reaches new sandboxes without a rebuild. A change to the package list needs a new base snapshot: bump
+the member in `BASE_SNAPSHOT` (`apps/desktop/src-tauri/src/core.rs`).
 
 ## Run it
 
@@ -131,13 +132,12 @@ It works against any desktop: Docker's, or a Beambox sandbox's host port.
    `:latest`, with the built-in `GITHUB_TOKEN`.
 
 Release a new image whenever `image/` changes:
-1. Bump the tag in `DESKTOP_IMAGE` and the snapshot members in `snapshot_key`, both in `apps/desktop/src-tauri/src/core.rs`.
+1. Bump the tag in this README's examples.
 2. Merge, then `git tag desktop-v<version> && git push origin desktop-v<version>`.
 3. The first time only, set the package's visibility to public on GitHub (Packages → `beambox-desktop` → Package
    settings), so microsandbox and Docker can pull it without signing in.
-4. Create a Desktop sandbox in Beambox. No "built the desktop on this computer" notice should appear.
 
-Before the first release, replace `OWNER` (lowercase, as GHCR requires) in `DESKTOP_IMAGE`, the workflow's `IMAGE`,
+Before the first release, replace `OWNER` (lowercase, as GHCR requires) in the workflow's `IMAGE`,
 the Dockerfile's source label and the READMEs.
 
 ## Scripts

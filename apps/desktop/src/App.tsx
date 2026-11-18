@@ -79,40 +79,33 @@ export function App({ api }: { api: Api }) {
       const kind = [opts.harness, opts.desktop && "desktop"].filter(Boolean).join(" with a ") || "sandbox";
       setPending((all) => [...all, { id, label: opts.name ? `${opts.name} · ${kind}` : kind }]);
       void call.then(refresh, () => {}).finally(() => setPending((all) => all.filter((p) => p.id !== id)));
-      // The first sandbox of each kind builds its snapshot; later ones boot from it in seconds. The toast counts
-      // the seconds, so a first build of a minute or two doesn't look stuck.
+      // Every sandbox boots from one base snapshot in about a second. Until it's built (the app builds it at
+      // startup), a create waits for it: the toast says so and counts the seconds, so it doesn't look stuck.
       const harness = opts.harness;
-      if (harness) {
-        // Without a usable stored key the agent asks you to sign in, so show its terminal straight away.
-        const signIn = call.then(async (s) => ({
-          s,
-          signIn: (await api.missingCredentials(harness)).length > 0,
-        }));
-        const what = opts.desktop ? `${harness} with a desktop` : harness;
-        const first = opts.desktop ? "about 2 minutes" : "about a minute";
-        waitToast(
-          signIn,
-          `Starting ${what}… the first one takes ${first}`,
-          ({ s, signIn }) =>
-            signIn ? `Sign in to ${harness} in ${s.name}'s terminal` : `${s.name} is ready`,
-          `Couldn't start ${harness}`,
-        );
-        void signIn.then(
-          ({ s, signIn }) => signIn && openSandbox(s.name, "terminal"),
-          () => {},
-        );
-      } else if (opts.desktop)
-        waitToast(
-          call,
-          "Starting the desktop… the first one takes about 2 minutes",
-          (s) => `${s.name} is ready`,
-          "Couldn't start the desktop",
-        );
-      // Such as: the desktop image couldn't be downloaded, so the desktop was built locally.
-      void call.then(
-        (s) => s.notice && toast.warning(s.notice),
+      // Without a usable stored key the agent asks you to sign in, so show its terminal straight away.
+      const signIn = harness
+        ? call.then(async (s) => ({ s, signIn: (await api.missingCredentials(harness)).length > 0 }))
+        : null;
+      void signIn?.then(
+        ({ s, signIn }) => signIn && openSandbox(s.name, "terminal"),
         () => {},
       );
+      void api.baseReady().then((ready) => {
+        if (ready && !harness && !opts.desktop) return;
+        const what = harness ? kind : opts.desktop ? "the desktop" : "the sandbox";
+        const loading = ready
+          ? `Starting ${what}…`
+          : `Starting ${what}… preparing Beambox first, which takes a few minutes, once`;
+        if (harness && signIn)
+          waitToast(
+            signIn,
+            loading,
+            ({ s, signIn }) =>
+              signIn ? `Sign in to ${harness} in ${s.name}'s terminal` : `${s.name} is ready`,
+            `Couldn't start ${harness}`,
+          );
+        else waitToast(call, loading, (s) => `${s.name} is ready`, `Couldn't start ${what}`);
+      });
       run(call);
     },
     start: (name) => {

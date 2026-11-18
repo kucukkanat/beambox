@@ -157,18 +157,22 @@ const DESKTOP_FILES: &[(&str, &str)] = &[
     ("browser-policies.json", include_str!("../../../../packages/desktop-image/image/browser-policies.json")),
 ];
 const DESKTOP_DIR: &str = "/tmp/beambox-desktop";
+const INSTALL_SH: &str = DESKTOP_FILES[0].1;
 
-/// Installs the desktop on Debian the way the image does: writes `packages/desktop-image/image/` into the sandbox and runs its
-/// `install.sh`. Shared by the Desktop template's local build and agent desktops.
-fn desktop_install() -> String {
-    let files: String = DESKTOP_FILES.iter().map(|(path, body)| file(&format!("{DESKTOP_DIR}/{path}"), body)).collect();
-    format!("{files}sh {DESKTOP_DIR}/install.sh\nrm -rf {DESKTOP_DIR}\n")
-}
-
-/// Shell script that turns `debian:trixie-slim` into the Desktop template: the local build used when the
-/// desktop image can't be pulled (see `core::DESKTOP_IMAGE`).
-pub fn desktop_setup() -> String {
-    format!("set -e\n{}", desktop_install())
+/// Shell script that turns `debian:trixie-slim` into Beambox's one base snapshot, which every sandbox boots from:
+/// the desktop's packages (`install.sh packages`), Node 24, tmux, git and every harness. Packages only: the files
+/// that configure them go in when each sandbox is created (`sandbox_setup`), so changing those never needs a new
+/// snapshot.
+pub fn base_setup() -> String {
+    let apt = "apt-get install -y --no-install-recommends";
+    let harnesses: String = HARNESSES.iter().map(install_harness).collect();
+    format!(
+        "set -e\nexport DEBIAN_FRONTEND=noninteractive\n{}sh {DESKTOP_DIR}/install.sh packages\nrm -rf {DESKTOP_DIR}\n\
+         apt-get update\n{apt} ca-certificates curl gnupg git tmux procps\n\
+         curl -fsSL https://deb.nodesource.com/setup_24.x | bash -\n{apt} nodejs\n\
+         {harnesses}mkdir -p /workspace /opt/beambox /etc/beambox\napt-get clean\nrm -rf /var/lib/apt/lists/*\n",
+        file(&format!("{DESKTOP_DIR}/install.sh"), INSTALL_SH),
+    )
 }
 
 /// Install the harness and check that it runs. npm skips a platform binary it can't fetch without failing (a new
@@ -185,25 +189,25 @@ fn install_harness(harness: &Harness) -> String {
     )
 }
 
-/// Shell script that turns `debian:trixie-slim` into an agent snapshot: Node 24, the harness, tmux and git, and
-/// optionally the same desktop as the Desktop template (`desktop_install`). `mcp.js` and the
-/// harness's MCP config are written as files afterwards.
-pub fn agent_setup(harness: &Harness, desktop: bool) -> String {
-    let apt = "apt-get install -y --no-install-recommends";
-    let mut script = format!(
-        "set -e\nexport DEBIAN_FRONTEND=noninteractive\napt-get update\n\
-         {apt} ca-certificates curl gnupg git tmux procps\n\
-         curl -fsSL https://deb.nodesource.com/setup_24.x | bash -\n{apt} nodejs\n\
-         {}mkdir -p /workspace /opt/beambox /etc/beambox \"$(dirname {})\"\n\
-         echo 'set -g allow-passthrough all' >> /etc/tmux.conf\n{}chmod +x {OPEN_PATH}\n",
-        install_harness(harness),
-        harness.config_path,
-        file(OPEN_PATH, include_str!("../../images/agent/beambox-open")),
-    );
+/// Shell script that sets up a new sandbox from the base snapshot, before its desktop starts: a desktop gets the
+/// desktop's files (`install.sh files`: its scripts, theme, dock and browser settings), an agent sandbox the
+/// sandbox's browser (`beambox-open`) and tmux's passthrough for it. `mcp.js` and the harness's MCP config are
+/// written as files afterwards. These come from the app itself, so a new version of Beambox changes them in new
+/// sandboxes without building the snapshot again.
+pub fn sandbox_setup(harness: Option<&Harness>, desktop: bool) -> Option<String> {
+    let mut script = String::new();
     if desktop {
-        script += &desktop_install();
+        let files: String = DESKTOP_FILES.iter().map(|(path, body)| file(&format!("{DESKTOP_DIR}/{path}"), body)).collect();
+        script += &format!("{files}sh {DESKTOP_DIR}/install.sh files\nrm -rf {DESKTOP_DIR}\n");
     }
-    script + "apt-get clean\nrm -rf /var/lib/apt/lists/*\n"
+    if let Some(h) = harness {
+        script += &format!(
+            "echo 'set -g allow-passthrough all' > /etc/tmux.conf\n{}chmod +x {OPEN_PATH}\nmkdir -p \"$(dirname {})\"\n",
+            file(OPEN_PATH, include_str!("../../images/agent/beambox-open")),
+            h.config_path,
+        );
+    }
+    (!script.is_empty()).then(|| format!("set -e\n{script}"))
 }
 
 /// The program the Terminal tab and `beambox attach` run: the agent's tmux session for agent sandboxes (a
@@ -280,19 +284,20 @@ mod tests {
 
     #[test]
     fn a_snapshot_build_fails_rather_than_keep_a_harness_that_doesnt_run() {
-        for (h, bin) in [("claude-code", "claude"), ("codex", "codex"), ("opencode", "opencode")] {
-            let setup = agent_setup(harness(h).unwrap(), false);
-            assert!(setup.contains(&format!("&& {bin} --version >/dev/null 2>&1; then break; fi")), "{h}");
-            assert!(setup.contains(&format!("{bin} doesn't run after installing")), "{h}");
+        let setup = base_setup();
+        for (package, bin) in [("@anthropic-ai/claude-code", "claude"), ("@openai/codex", "codex"), ("opencode-ai", "opencode")] {
+            assert!(setup.contains(&format!("npm install -g {package} && {bin} --version >/dev/null 2>&1; then break; fi")), "{bin}");
+            assert!(setup.contains(&format!("{bin} doesn't run after installing")), "{bin}");
         }
     }
 
     #[test]
     fn links_opened_in_the_sandbox_reach_the_app_through_tmux() {
-        let setup = agent_setup(harness("codex").unwrap(), false);
-        assert!(setup.contains("echo 'set -g allow-passthrough all' >> /etc/tmux.conf"));
+        let setup = sandbox_setup(Some(harness("codex").unwrap()), false).unwrap();
+        assert!(setup.contains("echo 'set -g allow-passthrough all' > /etc/tmux.conf"));
         assert!(setup.contains("cat > /usr/local/bin/beambox-open <<'EOF'\n#!/bin/sh\n"));
         assert!(setup.contains("chmod +x /usr/local/bin/beambox-open"));
+        assert!(setup.contains("mkdir -p \"$(dirname /root/.codex/config.toml)\""));
         let script = include_str!("../../images/agent/beambox-open");
         assert!(script.contains("https://*) ;;"), "only https links");
         assert!(script.contains("]1337;BeamboxOpen=%s"));
@@ -313,17 +318,25 @@ mod tests {
     }
 
     #[test]
-    fn agent_snapshots_get_node_the_harness_and_tmux_and_desktops_a_browser() {
-        let plain = agent_setup(harness("claude-code").unwrap(), false);
-        assert!(plain.starts_with("set -e\n"));
-        for part in ["tmux", "git", "ca-certificates", "setup_24.x", "npm install -g @anthropic-ai/claude-code"] {
-            assert!(plain.contains(part), "{part}");
+    fn the_base_snapshot_has_the_desktops_packages_node_and_every_harness_but_no_files() {
+        let base = base_setup();
+        assert!(base.starts_with("set -e\n"));
+        for part in ["tmux", "git", "ca-certificates", "setup_24.x", "sh /tmp/beambox-desktop/install.sh packages\n"] {
+            assert!(base.contains(part), "{part}");
         }
-        assert!(!plain.contains("Xvnc") && !plain.contains("chrom"));
-        // Agent desktops run the same install.sh as the Desktop template and the image.
-        let desktop = agent_setup(harness("codex").unwrap(), true);
-        assert!(desktop.contains(&desktop_install()));
-        assert!(desktop.ends_with("rm -rf /var/lib/apt/lists/*\n"));
+        assert_eq!(base.matches("\nEOF\n").count(), 1, "install.sh alone");
+        assert!(base.ends_with("rm -rf /var/lib/apt/lists/*\n"));
+    }
+
+    #[test]
+    fn each_sandbox_gets_only_the_files_it_needs() {
+        assert_eq!(sandbox_setup(None, false), None);
+        let desktop = sandbox_setup(None, true).unwrap();
+        assert!(desktop.contains("sh /tmp/beambox-desktop/install.sh files\n") && !desktop.contains("beambox-open"));
+        let agent = sandbox_setup(Some(harness("claude-code").unwrap()), false).unwrap();
+        assert!(!agent.contains("install.sh") && agent.contains("beambox-open"));
+        let both = sandbox_setup(Some(harness("claude-code").unwrap()), true).unwrap();
+        assert!(both.contains("install.sh files") && both.contains("beambox-open"));
     }
 
     /// The files in `packages/desktop-image/image/` (what the Dockerfile copies), relative to it, without the Dockerfile.
@@ -347,15 +360,15 @@ mod tests {
     }
 
     #[test]
-    fn the_snapshot_build_runs_install_sh_with_every_file_beside_it() {
+    fn a_new_desktop_runs_install_sh_with_every_file_beside_it() {
         let mut embedded: Vec<String> = DESKTOP_FILES.iter().map(|(path, _)| path.to_string()).collect();
         embedded.sort();
         assert_eq!(embedded, desktop_folder());
-        let script = desktop_setup();
+        let script = sandbox_setup(None, true).unwrap();
         assert!(script.starts_with("set -e\n"));
         assert!(script.contains("cat > /tmp/beambox-desktop/install.sh <<'EOF'\n#!/bin/sh\n"));
         assert!(script.contains("cat > /tmp/beambox-desktop/openbox/themerc <<'EOF'\n"));
-        assert!(script.ends_with("sh /tmp/beambox-desktop/install.sh\nrm -rf /tmp/beambox-desktop\n"));
+        assert!(script.ends_with("sh /tmp/beambox-desktop/install.sh files\nrm -rf /tmp/beambox-desktop\n"));
         // Every embedded file ends in a newline, so its EOF marker stands on a line of its own.
         assert_eq!(script.matches("\nEOF\n").count(), DESKTOP_FILES.len());
         assert!(DESKTOP_FILES.iter().all(|(_, body)| body.ends_with('\n')));

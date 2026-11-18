@@ -36,7 +36,6 @@ fn info(handle: &SandboxHandle) -> Result<SandboxInfo> {
         memory_mib: spec.resources.memory_mib,
         harness: label(HARNESS),
         ports,
-        notice: None,
         web_url: None,
     })
 }
@@ -79,6 +78,12 @@ impl SandboxBackend for MicroBackend {
         builder = builder.network(|n| n.policy(policy));
         // The builder's own create resolves a snapshot before validating the image; `build()` doesn't.
         let sandbox = builder.create_detached().await.map_err(err)?;
+        if let Some(setup) = &spec.setup {
+            let out = sandbox.exec_with("/bin/sh", |o| o.args(["-c", setup.as_str()])).await.map_err(err)?;
+            if !out.status().success {
+                return Err(format!("setting up {} failed: {}", spec.name, String::from_utf8_lossy(out.stderr_bytes()).trim()));
+            }
+        }
         after_boot(&sandbox, &spec.template).await?;
         info(&Sandbox::get(&spec.name).await.map_err(err)?)
     }
@@ -189,7 +194,7 @@ impl SandboxBackend for MicroBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{CreateOpts, Core, snapshot_name};
+    use crate::core::{CreateOpts, Core, base_snapshot_name};
     use crate::credentials::fake::FakeSecrets;
     use std::sync::Arc;
 
@@ -211,19 +216,13 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "boots real microVMs"]
-    async fn real_desktop_boots_from_the_local_snapshot() {
+    async fn real_desktop_boots_from_the_base_snapshot() {
         let core = core();
         let opts = |name: &str| CreateOpts { name: Some(name.into()), template: Some("desktop".into()), ..Default::default() };
-        let had_snapshot = core.backend.has_snapshot(&snapshot_name(None, true).unwrap()).await.unwrap();
         for name in ["it-desktop-1", "it-desktop-2"] {
             let _ = core.backend.delete(name).await;
             let info = core.create(opts(name)).await.unwrap();
             assert_eq!(info.template.as_str(), "desktop");
-            // Until the image is published (`OWNER` in its name), the first desktop falls back to the local build
-            // and says so; later ones boot from that snapshot.
-            if crate::core::DESKTOP_IMAGE.contains("/OWNER/") && name == "it-desktop-1" && !had_snapshot {
-                assert!(info.notice.as_deref().unwrap_or("").contains("built the desktop on this computer"), "{info:?}");
-            }
             let out = core.backend.exec(name, "pgrep Xvnc >/dev/null && pgrep tint2 >/dev/null && pgrep plank >/dev/null && which openbox chromium").await.unwrap();
             assert_eq!(out.exit_code, 0, "{out:?}");
         }
@@ -241,7 +240,7 @@ mod tests {
         }
         core.backend.stop(&fork.name).await.unwrap();
         core.backend.delete(&fork.name).await.unwrap();
-        assert!(core.backend.has_snapshot(&snapshot_name(None, true).unwrap()).await.unwrap());
+        assert!(core.backend.has_snapshot(&base_snapshot_name()).await.unwrap());
         let names: Vec<_> = core.backend.list().await.unwrap().into_iter().map(|s| s.name).collect();
         assert!(!names.iter().any(|n| n.starts_with(crate::core::BUILD_PREFIX)), "{names:?}");
         for name in ["it-desktop-1", "it-desktop-2"] {

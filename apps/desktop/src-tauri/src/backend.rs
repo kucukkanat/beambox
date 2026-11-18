@@ -36,6 +36,8 @@ pub struct Spec {
     pub harness: Option<String>,
     /// Boot from this local disk snapshot instead of `image`.
     pub snapshot: Option<String>,
+    /// Shell script run once right after the first boot, before the desktop starts.
+    pub setup: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -48,9 +50,6 @@ pub struct SandboxInfo {
     pub memory_mib: u32,
     pub harness: Option<String>,
     pub ports: Vec<Port>,
-    /// Something the person creating it should know, such as the desktop being built locally.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notice: Option<String>,
     /// The desktop in a browser, when it was created with `web`. Only known to the create that set it up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_url: Option<String>,
@@ -125,8 +124,6 @@ pub mod fake {
         pub envs: Mutex<Vec<(String, Vec<(String, String)>)>>,
         /// Canned results for exact commands, for commands the `echo` interpreter can't fake.
         pub replies: Mutex<BTreeMap<String, ExecResult>>,
-        /// Images that can't be pulled: creating from one fails, like a registry that's down.
-        pub failing_images: Mutex<BTreeSet<String>>,
     }
 
     impl FakeBackend {
@@ -149,9 +146,6 @@ pub mod fake {
                 Some(snapshot) if !self.snapshots.lock().unwrap().contains(snapshot) => {
                     return Err(format!("snapshot not found: {snapshot}"));
                 }
-                None if self.failing_images.lock().unwrap().contains(&spec.image) => {
-                    return Err(format!("pulling {}: registry unreachable", spec.image));
-                }
                 _ => {}
             }
             let info = SandboxInfo {
@@ -162,7 +156,6 @@ pub mod fake {
                 memory_mib: spec.memory_mib,
                 harness: spec.harness.clone(),
                 ports: spec.ports.clone(),
-                notice: None,
                 web_url: None,
             };
             self.specs.lock().unwrap().push(spec);

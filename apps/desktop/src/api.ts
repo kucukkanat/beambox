@@ -14,8 +14,6 @@ export type Sandbox = {
   /** The agent harness running in it, for agent sandboxes. */
   harness: string | null;
   ports: Port[];
-  /** Set by create when there's something to know, such as the desktop being built locally. */
-  notice?: string;
 };
 export type Harness = "claude-code" | "codex" | "opencode";
 /** Everything left out gets the Rust core's default (base, 1 vCPU, 256 MiB, auto name, public network). */
@@ -57,6 +55,8 @@ export type Api = {
   takeover(name: string): Promise<boolean>;
   setTakeover(name: string, on: boolean): Promise<void>;
   agentStatus(name: string): Promise<AgentStatus>;
+  /** Whether the base snapshot every sandbox boots from is built; until then a create waits minutes for it. */
+  baseReady(): Promise<boolean>;
   /** Start the harness again (without its task), signing in again if it needs to. */
   restartAgent(name: string): Promise<void>;
   /** A folder on this computer picked in the system dialog, or null when cancelled. */
@@ -107,6 +107,7 @@ export const tauriApi: Api = {
   takeover: (name) => invoke("takeover", { name }),
   setTakeover: (name, on) => invoke("set_takeover", { name, on }),
   agentStatus: (name) => invoke("agent_status", { name }),
+  baseReady: () => invoke("base_ready"),
   restartAgent: (name) => invoke("restart_agent", { name }),
   pickFolder: async () => {
     const folder = await open({ directory: true, title: "Mount a folder at /workspace" });

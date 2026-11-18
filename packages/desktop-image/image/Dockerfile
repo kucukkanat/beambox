@@ -1,5 +1,5 @@
 # The Beambox desktop as a standalone image: docker run -p 127.0.0.1:5900:5900 ghcr.io/OWNER/beambox-desktop
-# Built for linux/amd64 and linux/arm64 by .github/workflows/desktop-image.yml. Beambox's local build runs the
+# Built for linux/amd64 and linux/arm64 by .github/workflows/desktop-image.yml. Beambox runs the
 # same install.sh.
 FROM debian:trixie-slim
 # The packages get a layer of their own, so changing the desktop's files rebuilds (and makes Beambox pull) only the

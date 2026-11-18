@@ -166,6 +166,12 @@ async fn takeover(app: State<'_, App>, name: String) -> Result<bool> {
     app.core.is_taken_over(&name).await
 }
 
+/// Whether the base snapshot is built, so a create takes about a second rather than minutes.
+#[tauri::command]
+async fn base_ready(app: State<'_, App>) -> Result<bool> {
+    app.core.base_ready().await
+}
+
 /// `running`, `frozen` or `exited`.
 #[tauri::command]
 async fn agent_status(app: State<'_, App>, name: String) -> Result<&'static str> {
@@ -321,10 +327,14 @@ async fn terminal_close(app: State<'_, App>, id: u64) -> Result<()> {
 pub fn run(open: Option<String>) {
     let context = context();
     let (core, _) = setup(&context);
-    // Free the disk space older versions' snapshots take, in the background.
-    let pruning = core.clone();
+    // In the background: build the base snapshot, so the first sandbox starts in about a second (a create in the
+    // meantime waits for this build), then free the disk space older versions' snapshots take.
+    let preparing = core.clone();
     tauri::async_runtime::spawn(async move {
-        match pruning.prune_snapshots().await {
+        if let Err(e) = preparing.base_snapshot().await {
+            eprintln!("beambox: couldn't build the base snapshot: {e}");
+        }
+        match preparing.prune_snapshots().await {
             Ok(removed) if !removed.is_empty() => eprintln!("beambox: deleted old snapshots {}", removed.join(", ")),
             Ok(_) => {}
             Err(e) => eprintln!("beambox: couldn't delete old snapshots: {e}"),
@@ -367,6 +377,7 @@ pub fn run(open: Option<String>) {
             set_takeover,
             takeover,
             agent_status,
+            base_ready,
             restart_agent,
             credentials_list,
             credentials_set,

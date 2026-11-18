@@ -1,6 +1,6 @@
 #!/bin/sh
-# Installs the Beambox desktop on debian:trixie-slim from the files beside this script, as root. The Dockerfile,
-# Beambox's local snapshot build and agent desktops all run it: TigerVNC's Xvnc (X server and VNC server in one),
+# Installs the Beambox desktop on debian:trixie-slim from the files beside this script, as root. The Dockerfile and
+# Beambox (`packages` in its base snapshot, `files` in each new desktop) both run it: TigerVNC's Xvnc (X server and VNC server in one),
 # openbox with the Beambox theme (macOS-style buttons on the left), a tint2 top bar, the Plank dock, xterm, the
 # PCManFM file manager (libfm-modules adds its right-click actions, such as Set as Wallpaper), Inter, dark GTK and
 # Chromium, set up to run as root, with the system title bar and no sign-in or bookmarks bar.
