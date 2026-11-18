@@ -32,7 +32,14 @@ FILTERS
   apt-get update
   apt-get install -y --no-install-recommends tigervnc-standalone-server tigervnc-tools openbox tint2 plank \
     xcompmgr rofi xterm x11-xserver-utils hsetroot fonts-inter fonts-dejavu-core papirus-icon-theme librsvg2-common \
-    dbus-x11 dconf-cli dconf-gsettings-backend net-tools procps ca-certificates chromium
+    dbus-x11 dconf-cli dconf-gsettings-backend net-tools procps ca-certificates python3 chromium
+  # The web desktop (start-desktop's WEB_PORT): noVNC's page and websockify's Python, unpacked from Debian's packages
+  # without installing them. Their dependencies (Node.js for noVNC's tools, numpy, Redis and HTTP clients for
+  # websockify's speedups and plugins) would add about 130 MB, and the token-file plugin needs none of them.
+  (cd /tmp && apt-get download novnc python3-websockify &&
+    dpkg-deb --fsys-tarfile novnc_*.deb | tar -x -C / --exclude=./usr/share/novnc/utils ./usr/share/novnc &&
+    dpkg-deb --fsys-tarfile python3-websockify_*.deb | tar -x -C / ./usr/lib/python3/dist-packages/websockify &&
+    rm novnc_*.deb python3-websockify_*.deb)
   apt-get clean
   rm -rf /var/lib/apt/lists/*
 fi

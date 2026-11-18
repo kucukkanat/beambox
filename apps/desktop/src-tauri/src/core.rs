@@ -16,8 +16,10 @@ pub const TEMPLATES: &[(&str, &str, u32, &[u16])] = &[
 /// The Desktop template's image: `packages/desktop-image/image/` on Debian, built and published by
 /// `.github/workflows/desktop-image.yml`. Its tag follows the desktop snapshot's member (`snapshot_key`): bump
 /// both when `packages/desktop-image/image/` changes.
-pub const DESKTOP_IMAGE: &str = "ghcr.io/OWNER/beambox-desktop:5";
+pub const DESKTOP_IMAGE: &str = "ghcr.io/OWNER/beambox-desktop:6";
 pub const VNC_PORT: u16 = 5900;
+/// The guest port of the desktop in a browser (`CreateOpts::web`, start-desktop's web desktop).
+pub const WEB_PORT: u16 = 6080;
 
 /// Sandboxes with this name prefix are Beambox's own build machines, hidden from the GUI and the CLI.
 pub const BUILD_PREFIX: &str = "beambox-build-";
@@ -28,9 +30,9 @@ pub const BUILD_PREFIX: &str = "beambox-build-";
 pub fn snapshot_key(harness: Option<&str>, desktop: bool) -> Option<(String, String)> {
     match (harness, desktop) {
         (None, false) => None,
-        (None, true) => Some(("beambox-build-desktop".into(), "beambox-desktop-5".into())),
+        (None, true) => Some(("beambox-build-desktop".into(), "beambox-desktop-6".into())),
         (Some(h), false) => Some((format!("{BUILD_PREFIX}{h}"), format!("beambox-{h}-5"))),
-        (Some(h), true) => Some((format!("{BUILD_PREFIX}{h}-desktop"), format!("beambox-{h}-desktop-7"))),
+        (Some(h), true) => Some((format!("{BUILD_PREFIX}{h}-desktop"), format!("beambox-{h}-desktop-8"))),
     }
 }
 
@@ -62,6 +64,8 @@ pub struct CreateOpts {
     pub network: Option<String>,
     /// Guest ports to publish on 127.0.0.1.
     pub ports: Option<Vec<u16>>,
+    /// Also serve the desktop to a browser (noVNC on 127.0.0.1), at the link in `SandboxInfo::web_url`.
+    pub web: Option<bool>,
 }
 
 /// The harness's processes: the process group of tmux's pane, without the pane's own shell. tmux sends SIGCONT
@@ -126,6 +130,10 @@ impl Core {
         if harness.is_some() {
             (image, memory) = (agent::IMAGE, if desktop { 4096 } else { 2048 });
         }
+        let web = opts.web.unwrap_or(false);
+        if web && !desktop {
+            return Err("--web needs a desktop: add --desktop or --template desktop".into());
+        }
         let boot = |image: &str, snapshot: Option<String>| Spec {
             name: opts.name.clone().unwrap_or_default(),
             template: template.clone(),
@@ -138,8 +146,10 @@ impl Core {
             harness: harness.map(|h| h.name.to_string()),
             snapshot,
         };
-        let ports: Vec<u16> = default_ports.iter().copied().chain(opts.ports.clone().unwrap_or_default()).collect();
-        let info = if harness.is_none() && desktop {
+        let web_port = web.then_some(WEB_PORT);
+        let ports: Vec<u16> =
+            default_ports.iter().copied().chain(web_port).chain(opts.ports.clone().unwrap_or_default()).collect();
+        let mut info = if harness.is_none() && desktop {
             // A plain desktop boots from the published image, unless it was built here before (the same desktop).
             // If creating from the image fails, the same desktop is built here.
             let local = snapshot_name(None, true).expect("the desktop has a snapshot");
@@ -172,6 +182,9 @@ impl Core {
             };
             self.boot(self.reserve(boot(image, snapshot), &ports).await?).await?
         };
+        if web {
+            self.start_web(&mut info).await?;
+        }
         if let Some(h) = harness {
             // Signed in once already? Reuse that login, unless a stored key is used instead.
             if env.is_none() {
@@ -180,6 +193,27 @@ impl Core {
             self.start_agent(&info, h, opts.task.as_deref(), env).await?;
         }
         Ok(info)
+    }
+
+    /// Serve the desktop to a browser: start-desktop runs websockify for the port and token written here, now and
+    /// after every restart, and only connects links that carry the token (see start-desktop).
+    async fn start_web(&self, info: &mut SandboxInfo) -> Result<()> {
+        let mut bytes = [0u8; 16];
+        getrandom::fill(&mut bytes).map_err(|e| format!("can't make a token for the web desktop: {e}"))?;
+        let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        let setup = format!(
+            "mkdir -p /etc/beambox && echo {WEB_PORT} > /etc/beambox/web-port && \
+             (umask 077 && echo {token} > /etc/beambox/web-token) && start-desktop"
+        );
+        let out = self.backend.exec(&info.name, &setup).await?;
+        if out.exit_code != 0 {
+            return Err(format!("couldn't start the web desktop: {}", out.stderr.trim()));
+        }
+        let host = info.ports.iter().find(|p| p.guest == WEB_PORT).map(|p| p.host).ok_or("no host port for the web desktop")?;
+        info.web_url = Some(format!(
+            "http://127.0.0.1:{host}/vnc.html?autoconnect=1&resize=remote&path=websockify%3Ftoken%3D{token}"
+        ));
+        Ok(())
     }
 
     /// Give `spec` a free name (unless it has one) and host ports for `guest_ports`, held as pending until `boot`.
@@ -587,6 +621,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_web_desktop_publishes_its_port_and_links_with_the_token_it_wrote() {
+        // 6080 is taken on the host, so the link must use the host port it got instead.
+        let (fake, core) = core_with(|p| p != WEB_PORT);
+        let info = core.create(CreateOpts { desktop: Some(true), web: Some(true), ..Default::default() }).await.unwrap();
+        assert_eq!(info.ports, [Port { guest: VNC_PORT, host: VNC_PORT }, Port { guest: WEB_PORT, host: WEB_PORT + 1 }]);
+        let setup = fake.execs.lock().unwrap().last().unwrap().1.clone();
+        assert!(setup.contains("echo 6080 > /etc/beambox/web-port") && setup.ends_with("&& start-desktop"), "{setup}");
+        let token = setup.split("echo ").nth(2).and_then(|t| t.split(' ').next()).unwrap();
+        assert_eq!(token.len(), 32, "{setup}");
+        let url = info.web_url.unwrap();
+        assert_eq!(url, format!("http://127.0.0.1:6081/vnc.html?autoconnect=1&resize=remote&path=websockify%3Ftoken%3D{token}"));
+        // Each web desktop gets its own token.
+        let other = core.create(CreateOpts { desktop: Some(true), web: Some(true), ..Default::default() }).await.unwrap();
+        assert_ne!(other.web_url.unwrap().rsplit_once("%3D").unwrap().1, token);
+    }
+
+    #[tokio::test]
+    async fn web_needs_a_desktop_and_is_off_by_default() {
+        let (fake, core) = core_with(|_| true);
+        let err = core.create(CreateOpts { web: Some(true), ..Default::default() }).await.unwrap_err();
+        assert!(err.contains("--web needs a desktop"), "{err}");
+        assert!(fake.specs.lock().unwrap().is_empty(), "nothing is created");
+        let info = core.create(CreateOpts { desktop: Some(true), ..Default::default() }).await.unwrap();
+        assert!(info.web_url.is_none() && info.ports.iter().all(|p| p.guest != WEB_PORT));
+    }
+
+    #[tokio::test]
     async fn base_template_never_builds_a_snapshot() {
         let (fake, core) = core_with(|_| true);
         core.create(CreateOpts::default()).await.unwrap();
@@ -679,7 +740,7 @@ mod tests {
         let info = core.create(opts).await.unwrap();
         assert_eq!((info.template.as_str(), info.memory_mib), ("desktop", 4096));
         let spec = fake.specs.lock().unwrap().last().unwrap().clone();
-        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-7"));
+        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-8"));
     }
 
     #[tokio::test]
@@ -702,7 +763,7 @@ mod tests {
         let specs = fake.specs.lock().unwrap().clone();
         let snapshot = |name: &str| specs.iter().find(|s| s.name == name).unwrap().snapshot.clone().unwrap();
         assert_eq!(snapshot("a"), snapshot("b"));
-        assert_eq!(snapshot("c"), "beambox-build-codex-desktop:beambox-codex-desktop-7");
+        assert_eq!(snapshot("c"), "beambox-build-codex-desktop:beambox-codex-desktop-8");
         let c = specs.iter().find(|s| s.name == "c").unwrap();
         assert_eq!((c.memory_mib, c.ports.len(), c.template.as_str()), (4096, 1, "desktop"));
         let names: Vec<_> = core.backend.list().await.unwrap().into_iter().map(|s| s.name).collect();
@@ -733,7 +794,7 @@ mod tests {
         assert!(notice.contains(DESKTOP_IMAGE) && notice.contains("registry unreachable"), "{notice}");
         assert_eq!((info.name.as_str(), info.ports.as_slice()), ("sandbox-1", &[Port { guest: VNC_PORT, host: VNC_PORT }][..]));
         let spec = fake.specs.lock().unwrap().last().unwrap().clone();
-        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-desktop:beambox-desktop-5"));
+        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-desktop:beambox-desktop-6"));
         assert_eq!((spec.template.as_str(), spec.memory_mib), ("desktop", 2048));
         // The next one boots from that snapshot straight away: the same desktop, without asking the registry again.
         let second = core.create(plain_desktop()).await.unwrap();
@@ -806,7 +867,7 @@ mod tests {
         assert_eq!(image, agent::IMAGE);
         assert!(script.contains("sh /tmp/beambox-desktop/install.sh"));
         let spec = fake.specs.lock().unwrap().last().unwrap().clone();
-        assert_eq!((spec.name, spec.snapshot.as_deref()), (info.name, Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-7")));
+        assert_eq!((spec.name, spec.snapshot.as_deref()), (info.name, Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-8")));
     }
 
     #[test]
@@ -820,7 +881,7 @@ mod tests {
     #[test]
     fn snapshot_names_are_group_and_member() {
         assert_eq!(snapshot_name(None, false), None);
-        assert_eq!(snapshot_name(Some("opencode"), true).unwrap(), "beambox-build-opencode-desktop:beambox-opencode-desktop-7");
+        assert_eq!(snapshot_name(Some("opencode"), true).unwrap(), "beambox-build-opencode-desktop:beambox-opencode-desktop-8");
         for (h, d) in [(None, true), (Some("codex"), false)] {
             assert!(snapshot_key(h, d).unwrap().0.starts_with(BUILD_PREFIX));
         }

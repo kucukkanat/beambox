@@ -52,6 +52,9 @@ pub enum Command {
         /// Guest port to publish on 127.0.0.1. Repeat for more.
         #[arg(short, long = "port", value_name = "PORT")]
         ports: Vec<u16>,
+        /// Also serve the desktop to a browser on 127.0.0.1, and print its link.
+        #[arg(long)]
+        web: bool,
     },
     /// Start a stopped sandbox.
     Start { name: String },
@@ -228,7 +231,7 @@ pub async fn run(cli: &Cli, core: &Core, io: &mut Io<'_>) -> Result<i32> {
                 write!(io.stdout, "{}", table(&all)).map_err(io_err)?
             }
         }
-        Command::Create { name, template, harness, task, desktop, cpus, memory, mount, network, ports } => {
+        Command::Create { name, template, harness, task, desktop, cpus, memory, mount, network, ports, web } => {
             let mount = match mount {
                 Some(folder) => Some(std::path::absolute(folder).map_err(io_err)?.to_string_lossy().into_owned()),
                 None => None,
@@ -252,9 +255,13 @@ pub async fn run(cli: &Cli, core: &Core, io: &mut Io<'_>) -> Result<i32> {
                 mount,
                 network: network.clone(),
                 ports: if ports.is_empty() { None } else { Some(ports.clone()) },
+                web: Some(*web),
             };
             let info = core.create(opts).await?;
             if cli.json { json(io, &info)? } else { done(io, describe(&info))? }
+            if let (Some(url), false) = (&info.web_url, cli.json) {
+                writeln!(io.stdout, "The desktop in a browser: {url}").map_err(io_err)?;
+            }
             if let Some(notice) = &info.notice {
                 writeln!(io.stderr, "{notice}").map_err(io_err)?;
             }
@@ -692,6 +699,7 @@ mod tests {
             "create",
             "create web -t desktop --cpus 2 --memory 1024 --mount . --network none -p 3000 -p 8080",
             "create fixer --harness claude-code --task fix --desktop --mount .",
+            "create shared -t desktop --web",
             "start a",
             "stop a",
             "fork a",
@@ -771,6 +779,15 @@ mod tests {
         assert_eq!((spec.cpus, spec.memory_mib, spec.network.as_str()), (4, 2048, "none"));
         let mount = PathBuf::from(spec.mount.unwrap());
         assert!(mount.is_absolute() && mount == std::env::current_dir().unwrap(), "{mount:?}");
+    }
+
+    #[tokio::test]
+    async fn create_web_prints_the_browser_link() {
+        let out = beambox(&core(), "create shared -t desktop --web", "").await;
+        assert_eq!(out.code, Ok(0), "{}", out.stderr);
+        let link = out.stdout.lines().nth(1).unwrap();
+        assert!(link.starts_with("The desktop in a browser: http://127.0.0.1:6080/vnc.html?"), "{}", out.stdout);
+        assert!(beambox(&core(), "create plain -t desktop", "").await.stdout.lines().count() == 1);
     }
 
     #[tokio::test]

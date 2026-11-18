@@ -17,6 +17,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2.12", features = [] }
 microsandbox = { version = "=0.7.15", default-features = false, features = ["local", "net"] }
 keyring = "4.2"
+getrandom = "0.3"
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.30"
 futures-util = "0.3"

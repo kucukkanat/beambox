@@ -51,6 +51,9 @@ pub struct SandboxInfo {
     /// Something the person creating it should know, such as the desktop being built locally.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<String>,
+    /// The desktop in a browser, when it was created with `web`. Only known to the create that set it up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_url: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -154,6 +157,7 @@ pub mod fake {
                 harness: spec.harness.clone(),
                 ports: spec.ports.clone(),
                 notice: None,
+                web_url: None,
             };
             self.specs.lock().unwrap().push(spec);
             self.sandboxes.lock().unwrap().insert(info.name.clone(), info.clone());

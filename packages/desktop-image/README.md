@@ -11,7 +11,7 @@ Debian itself, so there's one definition of the desktop either way.
 ## Run it
 
 ```bash
-docker run --rm -p 127.0.0.1:5900:5900 ghcr.io/OWNER/beambox-desktop:5
+docker run --rm -p 127.0.0.1:5900:5900 ghcr.io/OWNER/beambox-desktop:6
 ```
 
 Podman takes the same arguments. Then open `vnc://127.0.0.1:5900` in a VNC viewer (macOS Screen Sharing, TigerVNC,
@@ -19,6 +19,22 @@ Remmina).
 - **No VNC password**, like in Beambox, so publish the port on `127.0.0.1` only.
 - **Runs as root** with Chromium's `--no-sandbox`: the container (or microVM) is the isolation.
 - **Foreground process.** `CMD ["beambox-desktop"]` runs `start-desktop`, then stays in the foreground until Xvnc exits.
+
+### In a browser (opt-in)
+
+```bash
+docker run --rm -e WEB_PORT=6080 -p 127.0.0.1:6080:6080 ghcr.io/OWNER/beambox-desktop:6
+```
+
+The log prints a link such as `http://127.0.0.1:6080/vnc.html?autoconnect=1&resize=remote&path=websockify%3Ftoken%3D…`.
+If you published the port on another host port, change it in the link. `resize=remote` makes the desktop follow the
+browser window.
+- **The token is the lock.** websockify doesn't check which site a connection comes from, so without it any web
+  page you have open could reach the desktop on localhost. It only connects requests that carry the random token
+  in `/etc/beambox/web-token`; the link has it.
+- **Plain VNC is unchanged:** 5900 still has no password and still needs to stay on `127.0.0.1`.
+- Without `WEB_PORT` nothing extra runs. Beambox's `beambox create --web` turns it on by writing
+  `/etc/beambox/web-port` and `/etc/beambox/web-token`, so it lasts across restarts.
 
 To build it locally: `docker build -t beambox-desktop packages/desktop-image/image`.
 
@@ -60,6 +76,10 @@ One consequence: a release that changes only files keeps the Debian packages it 
   - The system title bar (`browser-preferences.json`).
   - No sign-in, sync or bookmarks bar (`browser-policies.json`). The `BrowserSignin: 0` policy is used instead of
     `--no-first-run`, which would skip the title bar setting.
+- **The web desktop:** noVNC's page (`/usr/share/novnc`) and websockify's Python, unpacked from Debian's `novnc`
+  and `python3-websockify` packages without installing them. Installing them would bring Node.js, numpy, Redis and
+  HTTP clients, about 130 MB, and the token-file plugin needs none of these. websockify runs on the image's Python 3
+  and only warns that it's slower without numpy, which only affects input from the browser.
 - **`vncconfig`** relays text copied on the desktop to the viewer's clipboard.
 - **`beambox-desktop`:** the image's foreground `CMD`.
 

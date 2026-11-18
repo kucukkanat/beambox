@@ -102,6 +102,7 @@ from a symlinked executable on macOS.
 beambox list                                   # table; add --json to any command for scripts
 beambox create web -t desktop -p 3000 --mount .  # same options as the window's ▾ menu
 beambox create fixer --harness claude-code --task "fix the tests" --mount . [--desktop]
+beambox create shared -t desktop --web         # CLI only: also prints a link to the desktop in a browser
 beambox attach fixer                           # the agent's terminal (tmux); detach with Ctrl-b d
 beambox exec web -- npm test                   # exits with the command's exit code
 beambox shell web                              # interactive terminal
@@ -115,6 +116,10 @@ beambox credentials list                       # names only; `remove <name>` for
 beambox desktop web                            # open the window on web's Desktop tab
 beambox doctor                                 # hypervisor and bundled runtime check
 ```
+
+`--web` (with a desktop) also publishes guest port 6080 on 127.0.0.1 and prints a noVNC link with a random token.
+The setting lasts across restarts and forks. The link is only printed by that `create` (and is in its `--json` as
+`webUrl`), so keep it. See the desktop image's README for how the token keeps other web pages out.
 
 Windows: release builds are GUI-subsystem apps, so the CLI attaches to the terminal it was run from. `cmd.exe`
 doesn't wait for GUI-subsystem programs, so output can land after the next prompt there. Not tested on Windows yet.
@@ -131,9 +136,9 @@ doesn't wait for GUI-subsystem programs, so output can land after the next promp
 
   | Kind | Base image | Setup | Snapshot | First build |
   | --- | --- | --- | --- | --- |
-  | Desktop (plain) | `DESKTOP_IMAGE`, pulled; `debian:trixie-slim` if that fails | `desktop_setup()` (fallback only) | `beambox-build-desktop:beambox-desktop-5` (fallback only) | a pull; ~1.5 min built |
+  | Desktop (plain) | `DESKTOP_IMAGE`, pulled; `debian:trixie-slim` if that fails | `desktop_setup()` (fallback only) | `beambox-build-desktop:beambox-desktop-6` (fallback only) | a pull; ~1.5 min built |
   | Agent | `debian:trixie-slim` | `agent_setup(h, false)` + `mcp.js` + MCP config | `beambox-build-<h>:beambox-<h>-5` | ~40 s |
-  | Agent + desktop | `DESKTOP_IMAGE`; `debian:trixie-slim` if it can't be pulled | `agent_setup(h, false)` (`agent_setup(h, true)` on Debian) + the same files | `beambox-build-<h>-desktop:beambox-<h>-desktop-7` | ~1 min on the image, ~2 min on Debian |
+  | Agent + desktop | `DESKTOP_IMAGE`; `debian:trixie-slim` if it can't be pulled | `agent_setup(h, false)` (`agent_setup(h, true)` on Debian) + the same files | `beambox-build-<h>-desktop:beambox-<h>-desktop-8` | ~1 min on the image, ~2 min on Debian |
 
   Agent snapshots get Node 24 (NodeSource), the harness from npm (`@anthropic-ai/claude-code`, `@openai/codex`,
   `opencode-ai`; latest at build time), tmux, git, curl, `/opt/beambox/mcp.js` and the harness's MCP config
@@ -156,7 +161,7 @@ code embeds that folder (`DESKTOP_FILES` in `agent.rs`), so the app and the imag
 
 - **Desktop sandboxes** are created from `DESKTOP_IMAGE` (`core.rs`). microsandbox pulls it anonymously once, and
   later desktops reuse the cached layers. If creating from it fails (offline, registry down, not published yet),
-  Beambox deletes what the attempt left, builds the `beambox-build-desktop:beambox-desktop-5` snapshot by running
+  Beambox deletes what the attempt left, builds the `beambox-build-desktop:beambox-desktop-6` snapshot by running
   the package's `install.sh` on `debian:trixie-slim` (~1.5 min, once), and says so in a toast or on the CLI's
   stderr. Once that snapshot exists, desktops boot from it without asking the registry until the version is
   bumped. Pulling runs outside the lock that picks names and ports, so other creates aren't held up.

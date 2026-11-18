@@ -1,6 +1,21 @@
 #!/bin/sh
 # Beambox runs this after every boot. Starts the desktop in the background and returns once VNC is listening.
 export DISPLAY=:0 XENVIRONMENT=/etc/beambox/Xresources
+# The desktop in a browser, opt-in: noVNC on WEB_PORT (or the port in /etc/beambox/web-port, which Beambox writes so
+# it lasts across restarts), through websockify to VNC. websockify doesn't check which site a connection comes
+# from, so any open web page could reach a passwordless desktop on localhost. It only connects requests that carry
+# the random token in /etc/beambox/web-token instead, which is in the printed link.
+web_port=${WEB_PORT:-$(cat /etc/beambox/web-port 2>/dev/null)}
+if [ -n "$web_port" ] && ! pgrep -f websockify >/dev/null; then
+  mkdir -p /etc/beambox
+  [ -s /etc/beambox/web-token ] || od -An -tx1 -N16 /dev/urandom | tr -d ' \n' >/etc/beambox/web-token
+  token=$(cat /etc/beambox/web-token)
+  (umask 077 && echo "$token: localhost:5900" >/etc/beambox/web-targets)
+  setsid python3 -m websockify --web /usr/share/novnc --token-plugin ReadOnlyTokenFile \
+    --token-source /etc/beambox/web-targets "$web_port" >/tmp/websockify.log 2>&1 &
+  echo "The desktop in a browser (use the host port you published $web_port on):"
+  echo "http://127.0.0.1:$web_port/vnc.html?autoconnect=1&resize=remote&path=websockify%3Ftoken%3D$token"
+fi
 pgrep Xvnc >/dev/null && exit 0
 # /tmp is on the sandbox's disk, so a stopped or forked sandbox keeps the old server's lock and socket, and X
 # would refuse to start ("Server is already active for display 0").

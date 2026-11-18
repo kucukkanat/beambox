@@ -95,7 +95,7 @@ describe("home", () => {
   it("says when the desktop image couldn't be downloaded and was built locally", async () => {
     const api = fakeApi();
     const notice =
-      "Couldn't download ghcr.io/OWNER/beambox-desktop:5, so Beambox built the desktop on this computer.";
+      "Couldn't download ghcr.io/OWNER/beambox-desktop:6, so Beambox built the desktop on this computer.";
     // A name of its own: sonner's toast store outlives each render.
     api.create = vi.fn(async () => sandbox({ name: "desk-9", template: "desktop", notice }));
     render(<App api={api} />);

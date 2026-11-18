@@ -45,6 +45,20 @@ it("install.sh sets dpkg's filters before it installs, and does both steps when 
   }
 });
 
+it("start-desktop serves the web desktop only when asked, behind a token, and before its early exit", () => {
+  const start = read("../image/start-desktop");
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansion, not a template
+  has(start, "web_port=${WEB_PORT:-$(cat /etc/beambox/web-port 2>/dev/null)}");
+  has(start, 'if [ -n "$web_port" ]');
+  assert.match(start, /websockify [^\n]*--token-plugin ReadOnlyTokenFile \\\n\s+--token-source \/etc\/beambox\/web-targets/);
+  has(start, 'echo "$token: localhost:5900"');
+  // A restarted sandbox has Xvnc already running only if it never stopped; the web part must not depend on it.
+  assert.ok(start.indexOf("websockify") < start.indexOf("pgrep Xvnc >/dev/null && exit 0"));
+  const install = read("../image/install.sh");
+  has(install, "apt-get download novnc python3-websockify");
+  assert.doesNotMatch(install, /apt-get install[^\n]*(novnc|websockify)/);
+});
+
 it("the workflow builds both architectures natively and smoke-tests each", () => {
   assert.match(workflow, /tags: \["desktop-v\*"\]/);
   assert.match(workflow, /pull_request:\n\s+paths:\n(\s+- .*\n)*\s+- "packages\/desktop-image\/\*\*"/);

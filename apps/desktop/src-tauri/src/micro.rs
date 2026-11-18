@@ -37,6 +37,7 @@ fn info(handle: &SandboxHandle) -> Result<SandboxInfo> {
         harness: label(HARNESS),
         ports,
         notice: None,
+        web_url: None,
     })
 }
 
