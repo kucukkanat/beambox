@@ -1,0 +1,97 @@
+# @repo/desktop-image
+
+The Beambox desktop as a container image: a macOS-like Linux desktop over VNC (openbox, a top bar, a dock and
+Chromium) on `debian:trixie-slim`, for `linux/amd64` and `linux/arm64`. It is published as
+`ghcr.io/OWNER/beambox-desktop` (`OWNER` stays a placeholder until the GitHub repository exists).
+
+Beambox ([`apps/desktop`](../../apps/desktop)) builds on it. Desktop sandboxes boot from the image, and agent
+desktops are the image plus an agent. When the image can't be pulled, Beambox runs this package's `install.sh` on
+Debian itself, so there's one definition of the desktop either way.
+
+## Run it
+
+```bash
+docker run --rm -p 127.0.0.1:5900:5900 ghcr.io/OWNER/beambox-desktop:5
+```
+
+Podman takes the same arguments. Then open `vnc://127.0.0.1:5900` in a VNC viewer (macOS Screen Sharing, TigerVNC,
+Remmina).
+- **No VNC password**, like in Beambox, so publish the port on `127.0.0.1` only.
+- **Runs as root** with Chromium's `--no-sandbox`: the container (or microVM) is the isolation.
+- **Foreground process.** `CMD ["beambox-desktop"]` runs `start-desktop`, then stays in the foreground until Xvnc exits.
+
+To build it locally: `docker build -t beambox-desktop packages/desktop-image/image`.
+
+## What's in `image/`
+
+The Docker build context. The `Dockerfile` copies the folder and runs `install.sh`, which installs everything from
+the files beside it.
+
+- **`install.sh`:** the packages, the files below put in place, the openbox and dock setup, dark GTK. Beambox runs
+  the same script when it builds a desktop locally.
+- **`start-desktop`:** starts the desktop in the background and returns once VNC listens on 5900. Beambox runs it
+  after every boot.
+- **Xvnc:** TigerVNC's `Xvnc` is the X server and the VNC server in one. It resizes to the viewer instead of being
+  stretched, and sends changes as they're drawn.
+- **openbox** with the `Beambox` theme (`openbox/`): dark title bars, centred Inter titles, and traffic-light
+  buttons on the left (`CIML`), drawn as coloured circle bitmaps.
+- **A `tint2` top bar** (`tint2rc`): "● Beambox" opens `rofi` (also Super+Space), plus the active window's name. No
+  clock, because the sandbox runs on UTC.
+- **The Plank dock** (`plank.dconf`): the browser and Terminal, pinned only, magnified on hover.
+  - It's set through dconf, so it needs `dbus-launch`, `dconf-gsettings-backend` and `hide-mode='none'` as a
+    string enum.
+  - Papirus icons need `librsvg2-common`.
+- **`xcompmgr -c -C`** for shadows and the see-through bar and dock. picom loses track of windows under Xvnc.
+- **Look and feel:** a gradient background (`hsetroot`), dark GTK, and xterm in DejaVu Sans Mono (`Xresources`).
+  Debian's `debian-xterm.desktop` and `debian-uxterm.desktop` are removed for our `applications/xterm.desktop`.
+- **The browser: Debian's Chromium** on both architectures. Google Chrome's terms don't allow redistributing it in
+  an image.
+  - `--no-sandbox` (`chromium-flags`), because Chromium won't start as root with its own sandbox.
+  - The system title bar (`browser-preferences.json`).
+  - No sign-in, sync or bookmarks bar (`browser-policies.json`). The `BrowserSignin: 0` policy is used instead of
+    `--no-first-run`, which would skip the title bar setting.
+- **`vncconfig`** relays text copied on the desktop to the viewer's clipboard.
+- **`beambox-desktop`:** the image's foreground `CMD`.
+
+## API
+
+| Export | Description |
+| --- | --- |
+| `grabFrame(host, port)` | Connects to a VNC server without a password, reads one raw frame and returns `{ width, height, lit, total }` (`lit` = pixels that aren't black) |
+
+`src/vnc-frame.ts` is also a command that checks a desktop is drawn. It retries for up to `--wait` seconds until a
+frame is at least `--min`% non-black, and exits 1 otherwise:
+
+```bash
+node packages/desktop-image/src/vnc-frame.ts <port> [--host 127.0.0.1] [--wait 60] [--min 20]
+```
+
+It works against any desktop: Docker's, or a Beambox sandbox's host port.
+
+## CI and releases
+
+`.github/workflows/desktop-image.yml`:
+1. Builds each architecture with buildx on its own native runner (`ubuntu-24.04`, `ubuntu-24.04-arm`).
+2. Smoke-tests it: runs the container, waits for `vnc-frame.ts` to see at least 20% non-black, then requires
+   Xvnc, openbox, tint2 and Plank to be running.
+3. Pull requests that touch this package stop there: build and test only.
+4. A `desktop-v<version>` tag also pushes each architecture by digest and merges them into `:<version>` and
+   `:latest`, with the built-in `GITHUB_TOKEN`.
+
+Release a new image whenever `image/` changes:
+1. Bump the tag in `DESKTOP_IMAGE` and the snapshot members in `snapshot_key`, both in `apps/desktop/src-tauri/src/core.rs`.
+2. Merge, then `git tag desktop-v<version> && git push origin desktop-v<version>`.
+3. The first time only, set the package's visibility to public on GitHub (Packages → `beambox-desktop` → Package
+   settings), so microsandbox and Docker can pull it without signing in.
+4. Create a Desktop sandbox in Beambox. No "built the desktop on this computer" notice should appear.
+
+Before the first release, replace `OWNER` (lowercase, as GHCR requires) in `DESKTOP_IMAGE`, the workflow's `IMAGE`,
+the Dockerfile's source label and the READMEs.
+
+## Scripts
+
+```bash
+npm test -w @repo/desktop-image          # Dockerfile and workflow checks, the VNC frame grabber
+npm run typecheck -w @repo/desktop-image
+npm run build -w @repo/desktop-image     # emits dist/ (production only)
+```

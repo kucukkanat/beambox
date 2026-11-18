@@ -13,9 +13,9 @@ pub const TEMPLATES: &[(&str, &str, u32, &[u16])] = &[
     // Pulled from the registry; built locally into a snapshot when that fails (see `create`).
     ("desktop", DESKTOP_IMAGE, 2048, &[VNC_PORT]),
 ];
-/// The Desktop template's image: `images/desktop/` on Debian, built and published by
+/// The Desktop template's image: `packages/desktop-image/image/` on Debian, built and published by
 /// `.github/workflows/desktop-image.yml`. Its tag follows the desktop snapshot's member (`snapshot_key`): bump
-/// both when `images/desktop/` changes.
+/// both when `packages/desktop-image/image/` changes.
 pub const DESKTOP_IMAGE: &str = "ghcr.io/OWNER/beambox-desktop:5";
 pub const VNC_PORT: u16 = 5900;
 
@@ -30,7 +30,7 @@ pub fn snapshot_key(harness: Option<&str>, desktop: bool) -> Option<(String, Str
         (None, false) => None,
         (None, true) => Some(("beambox-build-desktop".into(), "beambox-desktop-5".into())),
         (Some(h), false) => Some((format!("{BUILD_PREFIX}{h}"), format!("beambox-{h}-5"))),
-        (Some(h), true) => Some((format!("{BUILD_PREFIX}{h}-desktop"), format!("beambox-{h}-desktop-6"))),
+        (Some(h), true) => Some((format!("{BUILD_PREFIX}{h}-desktop"), format!("beambox-{h}-desktop-7"))),
     }
 }
 
@@ -294,7 +294,8 @@ impl Core {
         }
     }
 
-    /// The local snapshot for a (harness, desktop) pair, built on first use: boot the base image, set it up,
+    /// The local snapshot for a (harness, desktop) pair, built on first use: boot its base image (the desktop image
+    /// for agent desktops, else `debian:trixie-slim`), set it up,
     /// stop, snapshot, delete the build sandbox. Every sandbox after that boots from it in seconds.
     pub async fn snapshot_for(&self, harness: Option<&Harness>, desktop: bool) -> Result<String> {
         let (builder, member) = snapshot_key(harness.map(|h| h.name), desktop).ok_or("nothing to build")?;
@@ -312,11 +313,7 @@ impl Core {
         }
         // A build interrupted by quitting the app leaves its sandbox behind.
         let _ = self.backend.delete(&builder).await;
-        let (image, script) = match harness {
-            Some(h) => (agent::IMAGE, agent::agent_setup(h, desktop)),
-            None => (agent::IMAGE, agent::desktop_setup()),
-        };
-        let spec = Spec {
+        let spec = |image: &str| Spec {
             name: builder.clone(),
             template: "build".into(),
             image: image.into(),
@@ -328,7 +325,26 @@ impl Core {
             harness: None,
             snapshot: None,
         };
-        self.backend.create(spec).await?;
+        let script = match harness {
+            // Agent desktops build on the desktop image, adding only the agent. If it can't be pulled, the same
+            // desktop is installed on Debian (its install.sh), like the plain desktop's fallback.
+            Some(h) if desktop => match self.backend.create(spec(DESKTOP_IMAGE)).await {
+                Ok(_) => agent::agent_setup(h, false),
+                Err(_) => {
+                    let _ = self.backend.delete(&builder).await;
+                    self.backend.create(spec(agent::IMAGE)).await?;
+                    agent::agent_setup(h, true)
+                }
+            },
+            Some(h) => {
+                self.backend.create(spec(agent::IMAGE)).await?;
+                agent::agent_setup(h, false)
+            }
+            None => {
+                self.backend.create(spec(agent::IMAGE)).await?;
+                agent::desktop_setup()
+            }
+        };
         let built = async {
             let out = self.backend.exec(&builder, &script).await?;
             if out.exit_code != 0 {
@@ -663,7 +679,7 @@ mod tests {
         let info = core.create(opts).await.unwrap();
         assert_eq!((info.template.as_str(), info.memory_mib), ("desktop", 4096));
         let spec = fake.specs.lock().unwrap().last().unwrap().clone();
-        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-6"));
+        assert_eq!(spec.snapshot.as_deref(), Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-7"));
     }
 
     #[tokio::test]
@@ -686,7 +702,7 @@ mod tests {
         let specs = fake.specs.lock().unwrap().clone();
         let snapshot = |name: &str| specs.iter().find(|s| s.name == name).unwrap().snapshot.clone().unwrap();
         assert_eq!(snapshot("a"), snapshot("b"));
-        assert_eq!(snapshot("c"), "beambox-build-codex-desktop:beambox-codex-desktop-6");
+        assert_eq!(snapshot("c"), "beambox-build-codex-desktop:beambox-codex-desktop-7");
         let c = specs.iter().find(|s| s.name == "c").unwrap();
         assert_eq!((c.memory_mib, c.ports.len(), c.template.as_str()), (4096, 1, "desktop"));
         let names: Vec<_> = core.backend.list().await.unwrap().into_iter().map(|s| s.name).collect();
@@ -754,6 +770,45 @@ mod tests {
         assert_eq!(fake.specs.lock().unwrap().len(), 1);
     }
 
+    /// The image each snapshot build booted from and the script it ran, by build sandbox.
+    fn builds(fake: &FakeBackend) -> Vec<(String, String, String)> {
+        let specs = fake.specs.lock().unwrap().clone();
+        let execs = fake.execs.lock().unwrap().clone();
+        execs
+            .iter()
+            .filter(|(_, c)| c.starts_with("set -e"))
+            .map(|(name, script)| {
+                let image = specs.iter().rev().find(|s| &s.name == name).unwrap().image.clone();
+                (name.clone(), image, script.clone())
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn agent_desktops_are_built_on_the_desktop_image() {
+        let (fake, core) = core_with(|_| true);
+        core.create(CreateOpts { desktop: Some(true), ..agent("x") }).await.unwrap();
+        let [(builder, image, script)] = builds(&fake).try_into().unwrap();
+        assert_eq!((builder.as_str(), image.as_str()), ("beambox-build-claude-code-desktop", DESKTOP_IMAGE));
+        assert!(script.contains("npm install -g @anthropic-ai/claude-code"));
+        assert!(!script.contains("install.sh"), "the desktop is already in the image");
+        // Agents without a desktop stay on plain Debian.
+        core.create(agent("y")).await.unwrap();
+        assert_eq!(builds(&fake)[1].1, agent::IMAGE);
+    }
+
+    #[tokio::test]
+    async fn without_the_image_an_agent_desktop_installs_the_same_desktop_on_debian() {
+        let (fake, core) = core_with(|_| true);
+        fake.failing_images.lock().unwrap().insert(DESKTOP_IMAGE.into());
+        let info = core.create(CreateOpts { desktop: Some(true), ..agent("x") }).await.unwrap();
+        let [(_, image, script)] = builds(&fake).try_into().unwrap();
+        assert_eq!(image, agent::IMAGE);
+        assert!(script.contains("sh /tmp/beambox-desktop/install.sh"));
+        let spec = fake.specs.lock().unwrap().last().unwrap().clone();
+        assert_eq!((spec.name, spec.snapshot.as_deref()), (info.name, Some("beambox-build-claude-code-desktop:beambox-claude-code-desktop-7")));
+    }
+
     #[test]
     fn the_desktop_image_tag_follows_the_desktop_snapshot() {
         let (_, member) = snapshot_key(None, true).unwrap();
@@ -765,7 +820,7 @@ mod tests {
     #[test]
     fn snapshot_names_are_group_and_member() {
         assert_eq!(snapshot_name(None, false), None);
-        assert_eq!(snapshot_name(Some("opencode"), true).unwrap(), "beambox-build-opencode-desktop:beambox-opencode-desktop-6");
+        assert_eq!(snapshot_name(Some("opencode"), true).unwrap(), "beambox-build-opencode-desktop:beambox-opencode-desktop-7");
         for (h, d) in [(None, true), (Some("codex"), false)] {
             assert!(snapshot_key(h, d).unwrap().0.starts_with(BUILD_PREFIX));
         }

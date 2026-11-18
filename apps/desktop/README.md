@@ -43,9 +43,8 @@ Beambox desktop: a Tauri 2 app that gives each AI agent its own computer, a micr
 | `src-tauri/src/proxy.rs` | TCP→WebSocket proxy for noVNC (replaces websockify) |
 | `src-tauri/src/paths.rs`, `hypervisor.rs`, `ports.rs` | Bundled runtime paths, hypervisor check, port picking |
 | `images/base/Dockerfile` | Base template image (≤ 10 MB unpacked) |
-| `images/desktop/` | The desktop image: `install.sh` (installs everything from the files beside it), `Dockerfile`, `start-desktop` (runs after each boot), `beambox-desktop` (the image's foreground `CMD`), theme, top bar, dock and browser settings. The local build runs the same `install.sh` (`desktop_install()` in `agent.rs`) |
-| `scripts/` | `fetch-runtime.mjs`, `check-image-size.mjs`, `vnc-frame.mjs` (checks a VNC desktop is drawn), `cargo.mjs` (bundles `apps/sandbox-mcp`, then runs cargo even if `~/.cargo/bin` isn't on PATH) |
-| `../../.github/workflows/desktop-image.yml` | Builds, smoke-tests and publishes the desktop image (see [Desktop image](#desktop-image)) |
+| `../../packages/desktop-image/` | The desktop container the app builds desktop and agent desktop sandboxes on (see [Desktop image](#desktop-image)) |
+| `scripts/` | `fetch-runtime.mjs`, `check-image-size.mjs`, `cargo.mjs` (bundles `apps/sandbox-mcp`, then runs cargo even if `~/.cargo/bin` isn't on PATH) |
 
 ## How it fits together
 
@@ -134,31 +133,15 @@ doesn't wait for GUI-subsystem programs, so output can land after the next promp
   | --- | --- | --- | --- | --- |
   | Desktop (plain) | `DESKTOP_IMAGE`, pulled; `debian:trixie-slim` if that fails | `desktop_setup()` (fallback only) | `beambox-build-desktop:beambox-desktop-5` (fallback only) | a pull; ~1.5 min built |
   | Agent | `debian:trixie-slim` | `agent_setup(h, false)` + `mcp.js` + MCP config | `beambox-build-<h>:beambox-<h>-5` | ~40 s |
-  | Agent + desktop | `debian:trixie-slim` | `agent_setup(h, true)` + the same files | `beambox-build-<h>-desktop:beambox-<h>-desktop-6` | ~2 min |
+  | Agent + desktop | `DESKTOP_IMAGE`; `debian:trixie-slim` if it can't be pulled | `agent_setup(h, false)` (`agent_setup(h, true)` on Debian) + the same files | `beambox-build-<h>-desktop:beambox-<h>-desktop-7` | ~1 min on the image, ~2 min on Debian |
 
   Agent snapshots get Node 24 (NodeSource), the harness from npm (`@anthropic-ai/claude-code`, `@openai/codex`,
   `opencode-ai`; latest at build time), tmux, git, curl, `/opt/beambox/mcp.js` and the harness's MCP config
   (`/root/.claude.json`, `/root/.codex/config.toml`, `/root/.config/opencode/opencode.json`). With a desktop they
-  also get the same desktop as the Desktop template (`desktop_install()`, which runs `images/desktop/install.sh`). Agent
+  start from the desktop image instead (see [Desktop image](#desktop-image)). Agent
   sandboxes default to 2 vCPUs and 2 GiB (4 GiB with a desktop). The app runs `start-desktop` after each boot.
-- **What's in it** (`images/desktop/`, macOS-like, on Debian because Plank and `xcompmgr` aren't packaged for
-  Alpine): TigerVNC's `Xvnc`, which is the X server and the VNC server in one. It resizes to the Desktop tab
-  instead of being stretched, and sends changes as they're drawn.
-  - openbox with our `Beambox` theme (`openbox/`): dark title bars, centred Inter titles, and traffic-light
-    buttons on the left (`CIML`), drawn as coloured circle bitmaps.
-  - A `tint2` top bar (`tint2rc`): "● Beambox" opens `rofi` (also Super+Space) and the active window's name. No
-    clock, because the sandbox runs on UTC.
-  - The Plank dock (`plank.dconf`, set through dconf, so it needs `dbus-launch` and `dconf-gsettings-backend`):
-    the browser and Terminal, pinned only, magnified on hover. Papirus icons, which need `librsvg2-common`.
-  - `xcompmgr` for shadows and the see-through bar and dock. picom loses track of windows under Xvnc. Window
-    corners stay square.
-  - A gradient background (`hsetroot`), dark GTK, and xterm in DejaVu Sans Mono (`Xresources`).
-  - The browser: Debian's Chromium on both architectures (Google Chrome's terms don't allow redistributing it in
-    an image). Everything runs as root, where Chromium won't start with its own sandbox, so it gets `--no-sandbox`
-    (`chromium-flags`; the microVM is the isolation). It also gets the system title bar
-    (`browser-preferences.json`) and no sign-in, sync or bookmarks bar (`browser-policies.json`; not
-    `--no-first-run`, which would skip the title bar setting).
-  - `vncconfig` relays text copied in the sandbox to the host's clipboard. `install.sh` puts it all together.
+- **What's in a desktop:** see [`packages/desktop-image`](../../packages/desktop-image). Xvnc, openbox with
+  the Beambox theme, a tint2 top bar, the Plank dock, xterm and Chromium.
 - `node scripts/cargo.mjs test real_ -- --ignored --test-threads=1` checks this against real microVMs: the Alpine desktop, a
   Claude Code sandbox (`claude --version`, MCP config, `mcp.js` answers `initialize`, tmux session in
   `/workspace`, no key on disk, take over and hand back) and its desktop variant (Chromium, VNC). It
@@ -167,48 +150,21 @@ doesn't wait for GUI-subsystem programs, so output can land after the next promp
 
 ## Desktop image
 
-The plain desktop is a standard OCI image, `ghcr.io/OWNER/beambox-desktop` (`OWNER` stays a placeholder until the
-GitHub repository exists), for `linux/amd64` and `linux/arm64`. Anyone can run it without Beambox:
+Desktops come from [`@repo/desktop-image`](../../packages/desktop-image): the container image (its `image/` folder
+holds `install.sh`, the `Dockerfile` and the theme files), published as `ghcr.io/OWNER/beambox-desktop`. The Rust
+code embeds that folder (`DESKTOP_FILES` in `agent.rs`), so the app and the image share one definition.
 
-```bash
-docker run --rm -p 127.0.0.1:5900:5900 ghcr.io/OWNER/beambox-desktop:5
-```
-
-Podman takes the same arguments. Then open `vnc://127.0.0.1:5900` in a VNC viewer (macOS Screen Sharing, TigerVNC,
-Remmina). VNC has no password, like in Beambox, so publish the port on `127.0.0.1` only. It runs as root with
-Chromium's `--no-sandbox`: the container is the isolation. `CMD ["beambox-desktop"]` runs `start-desktop`, then stays
-in the foreground until Xvnc exits.
-
-- **One definition.** `images/desktop/install.sh` installs the desktop on `debian:trixie-slim` from the files beside
-  it. The `Dockerfile` copies the folder and runs it. Beambox's local build writes the same folder into a build
-  sandbox and runs it, and so do agent desktops.
-- **In Beambox.** A Desktop sandbox is created from `DESKTOP_IMAGE` (`core.rs`). microsandbox pulls it anonymously
-  once, and later desktops reuse the cached layers. If creating from it fails (offline, registry down, not
-  published yet), Beambox deletes what the attempt left, builds the `beambox-build-desktop:beambox-desktop-5`
-  snapshot from `install.sh` instead (~1.5 min, once) and says so in a toast or on the CLI's stderr. Once that
-  snapshot exists, desktops boot from it without asking the registry (it is the same desktop at the same version)
-  until the version is bumped. Agent desktops always build locally. Pulling runs outside the lock that picks
-  names and ports, so other creates aren't held up by a download.
-- **CI** (`.github/workflows/desktop-image.yml`): each architecture is built with buildx on its own native runner
-  (`ubuntu-24.04`, `ubuntu-24.04-arm`) and smoke-tested: run the container, then `scripts/vnc-frame.mjs` waits for
-  VNC and requires a frame that is at least 20% non-black, and Xvnc, openbox, tint2 and Plank must be running.
-  Pull requests that touch `images/desktop/` build and test only. A `desktop-v<version>` tag also pushes each
-  architecture by digest and merges them into `:<version>` and `:latest`, using the built-in `GITHUB_TOKEN`.
-- **Checking a desktop by hand:** `node scripts/vnc-frame.mjs <host port>` against any running desktop, Beambox's or
-  Docker's.
-
-**Releasing a new image.** Do this whenever `images/desktop/` changes:
-
-1. Bump the version in `DESKTOP_IMAGE` and the desktop snapshot member in `snapshot_key` together (a test keeps
-   them equal), and the agent desktop members too.
-2. Merge, then tag and push: `git tag desktop-v<version> && git push origin desktop-v<version>`.
-3. The first time only, open the package on GitHub (Packages → `beambox-desktop` → Package settings) and set its
-   visibility to public, so microsandbox and Docker can pull it without signing in.
-4. Create a Desktop sandbox and check that no "built the desktop on this computer" notice appears and it looks like
-   one from the local build.
-
-Before the first release, replace `OWNER` (lowercase, as GHCR requires) in `DESKTOP_IMAGE`, the workflow's `IMAGE`,
-the Dockerfile's source label and this README.
+- **Desktop sandboxes** are created from `DESKTOP_IMAGE` (`core.rs`). microsandbox pulls it anonymously once, and
+  later desktops reuse the cached layers. If creating from it fails (offline, registry down, not published yet),
+  Beambox deletes what the attempt left, builds the `beambox-build-desktop:beambox-desktop-5` snapshot by running
+  the package's `install.sh` on `debian:trixie-slim` (~1.5 min, once), and says so in a toast or on the CLI's
+  stderr. Once that snapshot exists, desktops boot from it without asking the registry until the version is
+  bumped. Pulling runs outside the lock that picks names and ports, so other creates aren't held up.
+- **Agent desktops** are built on the desktop image: their snapshot boots `DESKTOP_IMAGE` and adds only the agent
+  (`agent_setup(h, false)`). If the image can't be pulled, the build installs the same desktop on Debian instead
+  (`agent_setup(h, true)`, which runs `install.sh`). Agents without a desktop stay on `debian:trixie-slim`.
+- **Releasing a new image** (see the package README): bump the tag in `DESKTOP_IMAGE` and the desktop snapshot
+  member in `snapshot_key` together (a test keeps them equal), and the agent desktop members too.
 
 ## Smoke test (manual, per OS)
 

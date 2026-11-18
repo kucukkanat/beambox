@@ -107,3 +107,11 @@ Desktop sandbox spends ~1.5 min installing packages from Debian on the user's ma
 - Creating the GitHub repository, pushing, tagging a release, or making the package public. Those are your steps
   (I'll list them).
 - A browser-based (noVNC) viewer inside the image. Docker users bring a VNC viewer.
+
+## After build: moved into a package (2026-11-18, at the user's request)
+- The image now lives in its own workspace, `packages/desktop-image` (`@repo/desktop-image`): `image/` is the Docker
+  build context (`install.sh`, `Dockerfile`, theme files) and `src/vnc-frame.ts` the frame grabber, exported as
+  `grabFrame`. `apps/desktop` depends on it and embeds `image/` in Rust. Paths in this spec that say
+  `apps/desktop/images/desktop/` or `scripts/vnc-frame.mjs` now mean those.
+- Agent desktops are built on the desktop image (only the agent is added). If it can't be pulled, they install the
+  same desktop on Debian as before. Agent desktop members go to `-7`.

@@ -1,31 +1,33 @@
 // Grab one frame from a VNC server without a password (raw encoding) and check that the desktop is drawn.
-// Usage: node scripts/vnc-frame.mjs <port> [--host 127.0.0.1] [--wait 60] [--min 20]
+// Usage: node packages/desktop-image/src/vnc-frame.ts <port> [--host 127.0.0.1] [--wait 60] [--min 20]
 // Retries (up to --wait seconds) until the server answers with a frame of which at least --min % of the pixels
 // aren't black, and fails otherwise. The desktop image's CI smoke test runs it, and so can you against any Beambox desktop.
-import { connect } from "node:net";
+import { connect, type Socket } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 /** Reads exact byte counts from a socket. */
-function reader(socket) {
+function reader(socket: Socket) {
   let buffered = Buffer.alloc(0);
   let wake = () => {};
-  let failure;
-  socket.on("data", (chunk) => {
+  let failure: Error | undefined;
+  socket.on("data", (chunk: Buffer) => {
     buffered = Buffer.concat([buffered, chunk]);
     wake();
   });
-  const fail = (error) => {
+  const fail = (error: Error) => {
     failure = error;
     wake();
   };
   socket.on("error", fail);
   socket.on("close", () => fail(new Error("VNC server closed the connection")));
-  return async (n) => {
+  return async (n: number) => {
     while (buffered.length < n) {
       if (failure) throw failure;
-      await new Promise((resolve) => (wake = resolve));
+      await new Promise<void>((resolve) => {
+        wake = resolve;
+      });
     }
     const out = buffered.subarray(0, n);
     buffered = buffered.subarray(n);
@@ -33,21 +35,23 @@ function reader(socket) {
   };
 }
 
+export type Frame = { width: number; height: number; lit: number; total: number };
+
 /** One full frame from `host:port`, as its size and how many of its pixels aren't black. */
-export async function grabFrame(host, port) {
+export async function grabFrame(host: string, port: number): Promise<Frame> {
   const socket = connect(port, host);
   socket.setTimeout(10_000, () => socket.destroy(new Error("VNC server timed out")));
   const read = reader(socket);
   try {
     await read(12);
     socket.write("RFB 003.008\n");
-    const types = await read((await read(1))[0]);
+    const types = await read((await read(1)).readUInt8(0));
     if (!types.includes(1)) throw new Error(`VNC server needs a password (security types ${[...types]})`);
     socket.write(Buffer.from([1]));
     if ((await read(4)).readUInt32BE(0) !== 0) throw new Error("VNC security handshake failed");
     socket.write(Buffer.from([1])); // ClientInit: shared
     const init = await read(24);
-    const [width, height, bytes] = [init.readUInt16BE(0), init.readUInt16BE(2), init[4] / 8];
+    const [width, height, bytes] = [init.readUInt16BE(0), init.readUInt16BE(2), (init[4] ?? 32) / 8];
     await read(init.readUInt32BE(20)); // desktop name
     socket.write(Buffer.from([2, 0, 0, 1, 0, 0, 0, 0])); // SetEncodings: raw
     const request = Buffer.alloc(10);
@@ -85,7 +89,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const [port, min] = [Number(positionals[0] ?? 5900), Number(values.min)];
   const deadline = Date.now() + Number(values.wait) * 1000;
   for (;;) {
-    let outcome;
+    let outcome: string;
     try {
       const { width, height, lit, total } = await grabFrame(values.host, port);
       const share = (100 * lit) / Math.max(total, 1);

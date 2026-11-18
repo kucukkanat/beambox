@@ -1,0 +1,25 @@
+{
+  "name": "@repo/desktop-image",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The Beambox desktop as an OCI image: a macOS-like Linux desktop over VNC (openbox, top bar, dock, Chromium) that Beambox builds its desktop and agent sandboxes on",
+  "exports": {
+    ".": {
+      "@repo/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "image"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --conditions=@repo/source --test \"src/**/*.test.ts\"",
+    "clean": "rm -rf dist .turbo"
+  },
+  "license": "MIT"
+}

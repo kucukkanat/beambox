@@ -1,6 +1,6 @@
-# The Beambox desktop image (apps/desktop/images/desktop/) for linux/amd64 and linux/arm64, each built on a native
+# The Beambox desktop image (packages/desktop-image/image/) for linux/amd64 and linux/arm64, each built on a native
 # runner and smoke-tested over VNC. Pull requests build and test only. A `desktop-v<version>` tag also pushes both by
-# digest and merges them into ghcr.io/OWNER/beambox-desktop:<version> and :latest. See apps/desktop/README.md.
+# digest and merges them into ghcr.io/OWNER/beambox-desktop:<version> and :latest. See packages/desktop-image/README.md.
 name: desktop-image
 
 on:
@@ -9,8 +9,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/desktop-image.yml"
-      - "apps/desktop/scripts/vnc-frame.mjs"
-      - "apps/desktop/images/desktop/**"
+      - "packages/desktop-image/**"
 
 permissions:
   contents: read
@@ -46,7 +45,7 @@ jobs:
       - name: Build
         uses: docker/build-push-action@v6
         with:
-          context: apps/desktop/images/desktop
+          context: packages/desktop-image/image
           platforms: ${{ matrix.platform }}
           build-args: VERSION=${{ steps.meta.outputs.version }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -57,7 +56,7 @@ jobs:
       - name: Smoke test
         run: |
           docker run -d --name desktop -p 127.0.0.1:5900:5900 beambox-desktop:smoke
-          node apps/desktop/scripts/vnc-frame.mjs 5900 --wait 90 --min 20
+          node packages/desktop-image/src/vnc-frame.ts 5900 --wait 90 --min 20
           docker exec desktop sh -c 'pgrep Xvnc && pgrep openbox && pgrep tint2 && pgrep plank'
           test "$(docker inspect -f '{{.State.Running}}' desktop)" = true
       - name: Logs
@@ -77,7 +76,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/desktop-v')
         uses: docker/build-push-action@v6
         with:
-          context: apps/desktop/images/desktop
+          context: packages/desktop-image/image
           platforms: ${{ matrix.platform }}
           build-args: VERSION=${{ steps.meta.outputs.version }}
           labels: ${{ steps.meta.outputs.labels }}

@@ -1,60 +1,60 @@
+import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { expect, it } from "vitest";
-import { grabFrame } from "./vnc-frame.mjs";
+import { it } from "node:test";
+import { grabFrame } from "./vnc-frame.ts";
 
+/** `text` contains `part` (shown as the failure message). */
+const has = (text: string, part: string) => assert.ok(text.includes(part), part);
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
-const dockerfile = read("../images/desktop/Dockerfile");
+const dockerfile = read("../image/Dockerfile");
 const workflow = read("../../../.github/workflows/desktop-image.yml");
 // biome-ignore lint/suspicious/noTemplateCurlyInString: a GitHub Actions expression, not a template
 const PUSH = "${{ startsWith(github.ref, 'refs/tags/desktop-v') }}";
 
 it("the Dockerfile runs install.sh from the copied folder and starts the desktop in the foreground", () => {
-  expect(dockerfile).toMatch(/^FROM debian:trixie-slim$/m);
-  expect(dockerfile).toMatch(/^COPY \. \/tmp\/beambox-desktop\/?$/m);
-  expect(dockerfile).toMatch(
-    /^RUN sh \/tmp\/beambox-desktop\/install\.sh && rm -rf \/tmp\/beambox-desktop$/m,
-  );
-  expect(dockerfile).toMatch(/^CMD \["beambox-desktop"\]$/m);
+  assert.match(dockerfile, /^FROM debian:trixie-slim$/m);
+  assert.match(dockerfile, /^COPY \. \/tmp\/beambox-desktop\/?$/m);
+  assert.match(dockerfile, /^RUN sh \/tmp\/beambox-desktop\/install\.sh && rm -rf \/tmp\/beambox-desktop$/m);
+  assert.match(dockerfile, /^CMD \["beambox-desktop"\]$/m);
   for (const label of ["source", "licenses", "version"]) {
-    expect(dockerfile).toContain(`org.opencontainers.image.${label}=`);
+    has(dockerfile, `org.opencontainers.image.${label}=`);
   }
 });
 
 it("the workflow builds both architectures natively and smoke-tests each", () => {
-  expect(workflow).toMatch(/tags: \["desktop-v\*"\]/);
-  expect(workflow).toMatch(
-    /pull_request:\n\s+paths:\n(\s+- .*\n)*\s+- "apps\/desktop\/images\/desktop\/\*\*"/,
-  );
-  expect(workflow).toMatch(/platform: linux\/amd64\n\s+runner: ubuntu-24\.04\n/);
-  expect(workflow).toMatch(/platform: linux\/arm64\n\s+runner: ubuntu-24\.04-arm\n/);
+  assert.match(workflow, /tags: \["desktop-v\*"\]/);
+  assert.match(workflow, /pull_request:\n\s+paths:\n(\s+- .*\n)*\s+- "packages\/desktop-image\/\*\*"/);
+  assert.match(workflow, /platform: linux\/amd64\n\s+runner: ubuntu-24\.04\n/);
+  assert.match(workflow, /platform: linux\/arm64\n\s+runner: ubuntu-24\.04-arm\n/);
   // biome-ignore lint/suspicious/noTemplateCurlyInString: a GitHub Actions expression, not a template
-  expect(workflow).toContain("runs-on: ${{ matrix.runner }}");
+  has(workflow, "runs-on: ${{ matrix.runner }}");
   for (const action of ["setup-buildx-action", "build-push-action", "metadata-action", "login-action"]) {
-    expect(workflow).toContain(`uses: docker/${action}@`);
+    has(workflow, `uses: docker/${action}@`);
   }
-  expect(workflow).toContain("-p 127.0.0.1:5900:5900");
-  expect(workflow).toContain("node apps/desktop/scripts/vnc-frame.mjs 5900");
-  expect(workflow).toContain("ghcr.io/OWNER/beambox-desktop");
+  has(workflow, "-p 127.0.0.1:5900:5900");
+  has(workflow, "node packages/desktop-image/src/vnc-frame.ts 5900");
+  has(workflow, "ghcr.io/OWNER/beambox-desktop");
 });
 
 it("the workflow pushes a multi-arch manifest only on desktop-v tags, never from pull requests", () => {
-  expect(workflow).toContain(`push-by-digest=true,name-canonical=true,push=${PUSH}`);
-  expect(workflow).not.toMatch(/push(: |=)true/);
+  has(workflow, `push-by-digest=true,name-canonical=true,push=${PUSH}`);
+  assert.doesNotMatch(workflow, /push(: |=)true/);
   // In the build job, which pull requests run, logging in and every push step happen on tags only. The merge
   // job runs on tags only as a whole.
   const build = workflow.slice(workflow.indexOf("  build:"), workflow.indexOf("  merge:"));
   const steps = build.split(/\n\s+- (?=name:|uses:)/);
   const guarded = steps.filter((s) => /login-action|Push by digest|upload-artifact/.test(s));
-  expect(guarded).toHaveLength(3);
-  for (const step of guarded) expect(step).toContain(`if: ${PUSH.slice(4, -3)}`);
-  expect(workflow).toMatch(
+  assert.equal(guarded.length, 3);
+  for (const step of guarded) has(step, `if: ${PUSH.slice(4, -3)}`);
+  assert.match(
+    workflow,
     /merge:\n\s+needs: build\n\s+if: startsWith\(github\.ref, 'refs\/tags\/desktop-v'\)/,
   );
-  expect(workflow).toContain("docker buildx imagetools create");
-  expect(workflow).toContain("type=match,pattern=desktop-v(.*),group=1");
-  expect(workflow).toContain("type=raw,value=latest");
-  expect(workflow).toContain("packages: write");
+  has(workflow, "docker buildx imagetools create");
+  has(workflow, "type=match,pattern=desktop-v(.*),group=1");
+  has(workflow, "type=raw,value=latest");
+  has(workflow, "packages: write");
 });
 
 /** A VNC server without a password that sends one raw frame: `pixels` are [r, g, b] in 32 bpp. */
@@ -99,7 +99,7 @@ it("vnc-frame grabs one frame and counts the pixels that aren't black", async ()
   const black: [number, number, number] = [0, 0, 0];
   const vnc = await fakeVnc(2, 2, [[26, 34, 56], black, [255, 255, 255], [0, 0, 1]]);
   try {
-    expect(await grabFrame("127.0.0.1", vnc.port)).toEqual({ width: 2, height: 2, lit: 3, total: 4 });
+    assert.deepEqual(await grabFrame("127.0.0.1", vnc.port), { width: 2, height: 2, lit: 3, total: 4 });
   } finally {
     vnc.close();
   }
