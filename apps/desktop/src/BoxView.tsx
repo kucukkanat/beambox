@@ -1,15 +1,17 @@
 import { Dialog } from "radix-ui";
-import { type DragEvent, useCallback, useEffect, useRef, useState } from "react";
+import { type DragEvent, lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import type { Actions } from "./App.tsx";
 import type { Api, DirEntry, Sandbox } from "./api.ts";
 import { type BoxState, basename, HELPERS, helperOf, WORD } from "./box.ts";
 import { Button } from "./components/ui/button.tsx";
-import { Desktop } from "./Desktop.tsx";
 import { Icon, Led } from "./keys.tsx";
 import { cn, showError, typing } from "./lib/utils.ts";
 import { SavePoints } from "./SavePoints.tsx";
 import { Folder, Screen, Tools } from "./Shelf.tsx";
-import { Terminal } from "./Terminal.tsx";
+
+// noVNC and xterm load when a box opens, not with the shelf.
+const Desktop = lazy(() => import("./Desktop.tsx").then((m) => ({ default: m.Desktop })));
+const Terminal = lazy(() => import("./Terminal.tsx").then((m) => ({ default: m.Terminal })));
 
 export type Mode = "screen" | "terminal" | "files" | "previews";
 
@@ -149,17 +151,19 @@ export function BoxView({
             </div>
           )}
           <Screen state={state} big>
-            {mode === "screen" && (running ? <Desktop api={api} name={s.name} /> : off)}
-            {mode === "terminal" &&
-              (running ? (
-                <div className="size-full p-2">
-                  <Terminal api={api} name={s.name} />
-                </div>
-              ) : (
-                off
-              ))}
-            {mode === "files" && (running ? <Files api={api} name={s.name} start="/workspace" /> : off)}
-            {mode === "previews" && <Ports sandbox={s} onScreen={() => setMode("screen")} />}
+            <Suspense fallback={null}>
+              {mode === "screen" && (running ? <Desktop api={api} name={s.name} /> : off)}
+              {mode === "terminal" &&
+                (running ? (
+                  <div className="size-full p-2">
+                    <Terminal api={api} name={s.name} />
+                  </div>
+                ) : (
+                  off
+                ))}
+              {mode === "files" && (running ? <Files api={api} name={s.name} start="/workspace" /> : off)}
+              {mode === "previews" && <Ports sandbox={s} onScreen={() => setMode("screen")} />}
+            </Suspense>
           </Screen>
           <div className="status-strip" hidden={full}>
             <span className="mono dim">
