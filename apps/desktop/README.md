@@ -52,8 +52,8 @@ Beambox desktop: a Tauri 2 app that gives each AI agent its own computer, a micr
 - **Stored keys** (optional; ⋯ → Settings, the New box sheet's More options, or `beambox credentials`): an Anthropic key
   or `claude setup-token` token and an OpenAI key, kept in the OS keychain (`keyring` crate) and passed only as
   the harness process's environment at start. A stored key wins over a saved login.
-- **CLI**: the same `beambox` binary run with a command. Everything the window does, from a terminal (see
-  [Command line](#command-line)).
+- **CLI**: the same `beambox` binary run with a command: making, running and reading boxes from a terminal (see
+  [Command line](#command-line)). Save points (snapshot, copy, rewind, fork) are left to the window.
 - **Screen** (desktop boxes): noVNC connects to a per-sandbox proxy on 127.0.0.1 that only accepts the app's own webview
   origin, so other pages on the machine can't reach the VNC server. Xvnc resizes its screen to the tab
   (`resizeSession`), so it's always drawn 1:1. The screen fills the window under the box's header (Save points are
@@ -201,10 +201,7 @@ beambox shell web                              # interactive terminal
 beambox put web /workspace/notes.txt notes.txt # or pipe into stdin; `cat` and `ls` read back
 beambox logs web -f
 beambox stats web
-beambox start|stop|fork|snapshot|delete web
-beambox snapshots web                          # its save points, newest first
-beambox copy web-1795000000                    # start web-copy-1 from a save point
-beambox rewind web web-1795000000              # asks y/N first; --yes skips that
+beambox start|stop|delete web
 beambox takeover fixer on                      # freeze the agent; `off` hands back
 beambox credentials set anthropic              # reads the key from stdin, hidden at a terminal
 beambox credentials list                       # names only; `remove <name>` forgets one
