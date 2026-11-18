@@ -24,7 +24,8 @@ Beambox desktop: a Tauri 2 app that gives each AI agent its own computer, a micr
     `onFolderDrop`), a screen (a desktop), a size fader (Light 1 CPU/1 GB, Standard 2/2, Roomy 2/4, Heavy 4/8; a
     screen needs Roomy) and the network. More options holds the name, web ports and an optional key. While a create
     runs, its card narrates the boot on a timer; only the end of the create is real.
-  - Opening a box shows one large screen with Screen (noVNC, desktop boxes), Terminal, Files and Web previews.
+  - Opening a box shows one large screen with Screen (noVNC, desktop boxes), Terminal and Files. Each shared web
+    port is a `127.0.0.1:<host port>` button beside them that opens it in your own browser.
     Agent boxes get the **AGENT / YOU lever**: YOU freezes the harness (SIGSTOP) so you can use the terminal and
     desktop undisturbed; handing back (SIGCONT) can type a note into the agent's session, so it knows what you
     changed. `Esc` goes back to the shelf.
@@ -37,8 +38,7 @@ Beambox desktop: a Tauri 2 app that gives each AI agent its own computer, a micr
     away also deletes its save points (one a copy still boots from stays until a later delete).
   - The card and the box view show the lent folder (`SandboxInfo.mount`).
   - Files opens at `/workspace` (the root if there's none), hides microsandbox's `/.msb` and opens symlinks to
-    folders as folders. Web previews list the published ports, with the desktop's VNC port as the Screen rather than
-    as a web page.
+    folders as folders. The desktop's VNC port is the Screen itself, so it gets no button.
 - **Signing in** happens inside the sandbox, with a subscription or a key. Without a stored key, the harness signs
   in in its own terminal before starting on the task: Claude Code runs `claude auth login`, Codex runs
   `codex login --device-auth`, and OpenCode starts on its free models (`/connect` adds a provider). The box shows

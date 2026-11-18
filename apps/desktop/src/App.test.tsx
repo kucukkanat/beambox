@@ -634,21 +634,21 @@ describe("box view", () => {
     expect(screen.queryByRole("switch", { name: "You drive" })).not.toBeInTheDocument();
   });
 
-  it("lists the box's web previews with their real host ports", async () => {
-    await open(fakeApi([sandbox({ ports: [{ guest: 8080, host: 8081 }] })]));
-    await userEvent.click(screen.getByRole("button", { name: "Web previews" }));
-    expect(screen.getByText("127.0.0.1:8081")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Open" }));
-    expect(screen.getByTitle("Port 8081")).toHaveAttribute("src", "http://127.0.0.1:8081");
-  });
-
-  it("says the VNC port is the screen instead of offering it as a page", async () => {
-    await open(fakeApi([sandbox({ template: "desktop", ports: [{ guest: 5900, host: 5901 }] })]));
-    await userEvent.click(screen.getByRole("button", { name: "Web previews" }));
-    expect(screen.getByText(/Desktop \(VNC\)/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Open" })).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Show the screen" }));
-    expect(mode("Screen")).toBeInTheDocument();
+  it("opens the box's web ports in your browser at their real host ports, but not the VNC port", async () => {
+    const api = fakeApi([
+      sandbox({
+        template: "desktop",
+        ports: [
+          { guest: 5900, host: 5901 },
+          { guest: 8080, host: 8081 },
+        ],
+      }),
+    ]);
+    await open(api);
+    expect(screen.queryByRole("button", { name: "Web previews" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /127\.0\.0\.1:5901/ })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /127\.0\.0\.1:8081/ }));
+    expect(api.openUrl).toHaveBeenCalledWith("http://127.0.0.1:8081");
   });
 
   it("opens Files at /workspace, falls back to the root, and hides microsandbox's own folder", async () => {

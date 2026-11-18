@@ -13,7 +13,7 @@ import { Folder, Screen, Tools } from "./Shelf.tsx";
 const Desktop = lazy(() => import("./Desktop.tsx").then((m) => ({ default: m.Desktop })));
 const Terminal = lazy(() => import("./Terminal.tsx").then((m) => ({ default: m.Terminal })));
 
-export type Mode = "screen" | "terminal" | "files" | "previews";
+export type Mode = "screen" | "terminal" | "files";
 
 type Props = {
   api: Api;
@@ -32,8 +32,8 @@ type Props = {
   onBack(): void;
 };
 
-/** Guest ports Beambox itself publishes for the desktop, said in words instead of offered as a web page. */
-const DESKTOP_PORTS: Record<number, string> = { 5900: "Desktop (VNC): shown on the Screen" };
+/** The desktop's own VNC port: shown on the Screen, not offered as a web page. */
+const VNC_PORT = 5900;
 
 export function BoxView({
   api,
@@ -87,9 +87,10 @@ export function BoxView({
       ["screen", "Screen", "monitor"],
       ["terminal", "Terminal", "term"],
       ["files", "Files", "folder"],
-      ["previews", "Web previews", "globe"],
     ] as const
   ).filter(([id]) => id !== "screen" || hasScreen);
+  // Shared web ports open in your own browser; the desktop's VNC port is the Screen itself.
+  const web = s.ports.filter((p) => !(hasScreen && p.guest === VNC_PORT));
   const off = <p className="empty-screen">Wake the box to use this.</p>;
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-[18px]">
@@ -144,10 +145,24 @@ export function BoxView({
                   </Button>
                 ))}
               </fieldset>
-              <Button title="Full window (⌘⇧F)" onClick={() => setFull(true)}>
-                <Icon name="expand" size={16} />
-                Full window
-              </Button>
+              <div className="flex flex-wrap items-center gap-2">
+                {web.map((p) => (
+                  <Button
+                    key={p.guest}
+                    size="sm"
+                    disabled={!running}
+                    title={`Port ${p.guest} in the box, opened in your browser`}
+                    onClick={() => void api.openUrl(`http://127.0.0.1:${p.host}`)}
+                  >
+                    <Icon name="globe" size={14} />
+                    127.0.0.1:{p.host}
+                  </Button>
+                ))}
+                <Button title="Full window (⌘⇧F)" onClick={() => setFull(true)}>
+                  <Icon name="expand" size={16} />
+                  Full window
+                </Button>
+              </div>
             </div>
           )}
           <Screen state={state} big>
@@ -162,7 +177,6 @@ export function BoxView({
                   off
                 ))}
               {mode === "files" && (running ? <Files api={api} name={s.name} start="/workspace" /> : off)}
-              {mode === "previews" && <Ports sandbox={s} onScreen={() => setMode("screen")} />}
             </Suspense>
           </Screen>
           <div className="status-strip" hidden={full}>
@@ -381,55 +395,5 @@ function Files({ api, name, start }: { api: Api; name: string; start: string }) 
         ))}
       </ul>
     </section>
-  );
-}
-
-function Ports({ sandbox, onScreen }: { sandbox: Sandbox; onScreen(): void }) {
-  const [port, setPort] = useState<number | null>(null);
-  const desktop = (guest: number) => sandbox.template === "desktop" && DESKTOP_PORTS[guest];
-  const own = sandbox.ports.filter((p) => !desktop(p.guest));
-  if (port !== null)
-    return (
-      <div className="absolute inset-4 flex flex-col gap-3">
-        <div className="flex items-center gap-2.5 font-mono text-[13px]">
-          <Button size="sm" onClick={() => setPort(null)}>
-            <Icon name="back" size={14} /> All previews
-          </Button>
-          <code>127.0.0.1:{port}</code>
-        </div>
-        <iframe
-          title={`Port ${port}`}
-          src={`http://127.0.0.1:${port}`}
-          className="flex-1 rounded-lg bg-white"
-        />
-      </div>
-    );
-  return (
-    <ul className="absolute inset-0 flex flex-col gap-2.5 overflow-y-auto p-4 font-mono text-[13px]">
-      {own.length === 0 && (
-        <li className="text-[var(--screen-dim)]">
-          Nothing to preview yet. Share a web port under New box → More options, and it shows up here so you
-          can try it.
-        </li>
-      )}
-      {sandbox.ports.map((p) => (
-        <li key={p.guest} className="flex items-center gap-3">
-          <span className="text-[var(--screen-dim)]">port {p.guest} →</span>
-          <code>127.0.0.1:{p.host}</code>
-          {desktop(p.guest) ? (
-            <>
-              <span className="text-[var(--screen-dim)] text-xs">{desktop(p.guest)}</span>
-              <Button size="sm" aria-label="Show the screen" onClick={onScreen}>
-                Screen
-              </Button>
-            </>
-          ) : (
-            <Button size="sm" onClick={() => setPort(p.host)}>
-              Open
-            </Button>
-          )}
-        </li>
-      ))}
-    </ul>
   );
 }
